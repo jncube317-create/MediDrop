@@ -1,0 +1,24 @@
+{
+  "name": "medidrop-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MediDrop WhatsApp demo bot (Stage A)",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/money.test.ts tests/limits.test.ts tests/orders.test.ts tests/data.test.ts"
+  },
+  "dependencies": {
+    "fastify": "^4.28.1",
+    "paynow": "^1.2.0",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "typescript": "^5.6.3"
+  }
+}
