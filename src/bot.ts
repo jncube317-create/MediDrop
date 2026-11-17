@@ -3,7 +3,7 @@
 
 import { env } from "./env";
 import * as wa from "./wa";
-import { ZONES, type ZoneKey, findMedicines, getMedicine, getPharmacy, offersFor, type Medicine } from "./data";
+import { ZONES, type ZoneKey, findMedicines, getMedicine, getPharmacy, medicineImageUrl, offersFor, type Medicine } from "./data";
 import { formatUsd, orderTotals } from "./money";
 import {
   type Order,
@@ -246,14 +246,10 @@ async function customer(m: Incoming): Promise<void> {
         return;
       }
       const first = matches[0];
-      if (matches.length === 1 && first) return showPharmacies(to, s, first);
+      if (matches.length === 1 && first) return showPharmacies(to, s, first, true);
       s.step = "PICK_MED";
-      const rows = matches.slice(0, 10).map((med) => ({
-        id: `med:${med.id}`,
-        title: med.name,
-        description: med.rx ? "Prescription needed" : "No prescription needed",
-      }));
-      await prompt(s, () => wa.sendList(to, "I found a few matches. Which one?", "Choose medicine", rows, "Medicines"));
+      const found = matches.slice(0, 10);
+      await prompt(s, () => sendMedicineChoices(to, found));
       return;
     }
 
@@ -462,7 +458,38 @@ async function showMenu(to: string, s: Session, greeting: string): Promise<void>
   );
 }
 
-async function showPharmacies(to: string, s: Session, med: Medicine): Promise<void> {
+/** Picture cards to swipe through; falls back to a plain list if pictures can't be sent. */
+async function sendMedicineChoices(to: string, meds: Medicine[]): Promise<void> {
+  const now = new Date();
+  const cards = meds.flatMap((med) => {
+    const imageUrl = medicineImageUrl(env.PUBLIC_URL, med.id);
+    if (!imageUrl) return [];
+    const offers = offersFor(med, now, env.IGNORE_HOURS);
+    const cheapest = offers[0];
+    const detail = med.rx
+      ? "Prescription needed"
+      : cheapest
+        ? `From ${formatUsd(cheapest.priceCents)} · ${offers.length} open ${offers.length === 1 ? "pharmacy" : "pharmacies"}`
+        : "Not available right now";
+    return [{ imageUrl, text: `*${med.name}*\n${detail}`, buttons: [{ id: `med:${med.id}`, title: "Choose" }] }];
+  });
+  if (cards.length === meds.length && cards.length >= 2) {
+    const sent = await wa.sendCarousel(to, "I found a few matches. Swipe to compare, then tap Choose:", cards);
+    if (sent) return;
+  }
+  const rows = meds.map((med) => ({
+    id: `med:${med.id}`,
+    title: med.name,
+    description: med.rx ? "Prescription needed" : "No prescription needed",
+  }));
+  await wa.sendList(to, "I found a few matches. Which one?", "Choose medicine", rows, "Medicines");
+}
+
+async function showPharmacies(to: string, s: Session, med: Medicine, withPhoto = false): Promise<void> {
+  if (withPhoto) {
+    const imageUrl = medicineImageUrl(env.PUBLIC_URL, med.id);
+    if (imageUrl) await wa.sendImageLink(to, imageUrl, `${med.name} (sample image)`);
+  }
   if (!med.deliveryAllowed) {
     await wa.sendText(to, `Sorry, ${med.name} can't be delivered. Please visit a pharmacy.`);
     return;

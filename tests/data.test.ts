@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MEDICINES, PHARMACIES, ZONES, findMedicines, isOpen, offersFor } from "../src/data";
+import { MEDICINES, PHARMACIES, ZONES, findMedicines, isOpen, medicineImageUrl, offersFor } from "../src/data";
 
 test("search finds brand names, generics and typos", () => {
   assert.equal(findMedicines("panado")[0]?.id, "m01");
@@ -43,4 +43,19 @@ test("seed data fits WhatsApp limits", () => {
     for (const s of z.suburbs) assert.ok(s.length <= 24, s);
     for (const m of MEDICINES) for (const v of Object.values(m.prices)) assert.ok(Number.isInteger(v));
   }
+});
+
+test("demo searches that show picture cards return 2+ matches", () => {
+  assert.ok(findMedicines("pain").length >= 2);
+  assert.ok(findMedicines("allergy").length >= 2);
+});
+
+test("image links only when the server has a public https address", () => {
+  assert.equal(medicineImageUrl("https://medidrop.up.railway.app", "m01"), "https://medidrop.up.railway.app/img/m01.jpg");
+  assert.equal(medicineImageUrl("", "m01"), null);
+});
+
+test("every medicine has a sample picture file", async () => {
+  const { existsSync } = await import("node:fs");
+  for (const m of MEDICINES) assert.ok(existsSync(`public/img/${m.id}.jpg`), m.id);
 });

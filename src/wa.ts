@@ -2,7 +2,7 @@
 // so a silent "no reply" never happens again.
 
 import { env } from "./env";
-import { validateButtons, validateList, validateText, type Button, type ListRow } from "./limits";
+import { validateButtons, validateCarousel, validateList, validateText, type Button, type CarouselCard, type ListRow } from "./limits";
 
 const graph = () => `${env.GRAPH_BASE_URL}/${env.GRAPH_API_VERSION}`;
 const authHeader = () => ({ Authorization: `Bearer ${env.WA_TOKEN}` });
@@ -85,6 +85,37 @@ export async function sendList(
 
 export async function sendImage(to: string, mediaId: string, caption: string): Promise<boolean> {
   return postMessage({ to, type: "image", image: { id: mediaId, caption } });
+}
+
+export async function sendImageLink(to: string, link: string, caption: string): Promise<boolean> {
+  return postMessage({ to, type: "image", image: { link, caption } });
+}
+
+/** Swipeable picture cards (2-10), each with quick-reply buttons. Returns false if refused or rejected. */
+export async function sendCarousel(to: string, body: string, cards: CarouselCard[]): Promise<boolean> {
+  const problem = validateCarousel(body, cards);
+  if (problem) {
+    console.error(`[WA] refused to send carousel: ${problem}`);
+    return false;
+  }
+  return postMessage({
+    to,
+    type: "interactive",
+    interactive: {
+      type: "carousel",
+      body: { text: body },
+      action: {
+        cards: cards.map((c, i) => ({
+          card_index: i,
+          header: { type: "image", image: { link: c.imageUrl } },
+          body: { text: c.text },
+          action: {
+            buttons: c.buttons.map((b) => ({ type: "quick_reply", quick_reply: { id: b.id, title: b.title } })),
+          },
+        })),
+      },
+    },
+  });
 }
 
 /**

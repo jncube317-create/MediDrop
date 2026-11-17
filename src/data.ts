@@ -54,8 +54,8 @@ export interface Medicine {
 }
 
 export const MEDICINES: Medicine[] = [
-  { id: "m01", name: "Paracetamol 500mg x20", aliases: ["paracetamol", "panado", "panadol", "pain tablets"], rx: false, deliveryAllowed: true, maxQty: 3, prices: { p1: 150, p2: 180, p3: 120, p4: 160 } },
-  { id: "m02", name: "Ibuprofen 200mg x24", aliases: ["ibuprofen", "brufen", "nurofen"], rx: false, deliveryAllowed: true, maxQty: 3, prices: { p1: 350, p2: 320, p4: 300 } },
+  { id: "m01", name: "Paracetamol 500mg x20", aliases: ["paracetamol", "panado", "panadol", "pain tablets", "painkiller"], rx: false, deliveryAllowed: true, maxQty: 3, prices: { p1: 150, p2: 180, p3: 120, p4: 160 } },
+  { id: "m02", name: "Ibuprofen 200mg x24", aliases: ["ibuprofen", "brufen", "nurofen", "pain tablets", "painkiller"], rx: false, deliveryAllowed: true, maxQty: 3, prices: { p1: 350, p2: 320, p4: 300 } },
   { id: "m03", name: "Cetirizine 10mg x10", aliases: ["cetirizine", "zyrtec", "allergy"], rx: false, deliveryAllowed: true, maxQty: 3, prices: { p1: 400, p2: 450, p3: 380 } },
   { id: "m04", name: "Loratadine 10mg x10", aliases: ["loratadine", "clarityne", "allergy"], rx: false, deliveryAllowed: true, maxQty: 3, prices: { p1: 420, p3: 400, p4: 390 } },
   { id: "m05", name: "ORS sachets x5", aliases: ["ors", "oral rehydration", "rehydration salts"], rx: false, deliveryAllowed: true, maxQty: 5, prices: { p1: 250, p2: 260, p3: 200, p4: 240 } },
@@ -154,4 +154,9 @@ export function offersFor(medicine: Medicine, now: Date, ignoreHours: boolean): 
     offers.push({ pharmacy, priceCents: price });
   }
   return offers.sort((a, b) => a.priceCents - b.priceCents);
+}
+
+/** Sample pack image, served by this server at /img/<id>.jpg. Null when there's no public URL yet. */
+export function medicineImageUrl(publicUrl: string, medicineId: string): string | null {
+  return publicUrl.startsWith("https://") ? `${publicUrl}/img/${medicineId}.jpg` : null;
 }

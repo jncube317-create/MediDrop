@@ -1,5 +1,7 @@
 import Fastify from "fastify";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { env, paynowConfigured } from "./env";
 import { handleIncoming, confirmPayment, type Incoming } from "./bot";
 
@@ -46,6 +48,7 @@ interface WaMessage {
   type: string;
   text?: { body?: string };
   interactive?: { button_reply?: { id: string }; list_reply?: { id: string } };
+  button?: { payload?: string };
   image?: { id: string };
 }
 
@@ -53,6 +56,7 @@ function toIncoming(msg: WaMessage): Incoming {
   if (msg.type === "text" && msg.text?.body) return { from: msg.from, kind: "text", text: msg.text.body };
   const replyId = msg.interactive?.button_reply?.id ?? msg.interactive?.list_reply?.id;
   if (msg.type === "interactive" && replyId) return { from: msg.from, kind: "reply", id: replyId };
+  if (msg.type === "button" && msg.button?.payload) return { from: msg.from, kind: "reply", id: msg.button.payload };
   if (msg.type === "image" && msg.image?.id) return { from: msg.from, kind: "image", mediaId: msg.image.id };
   return { from: msg.from, kind: "other" };
 }
@@ -84,6 +88,17 @@ async function processWebhook(body: unknown): Promise<void> {
 }
 
 app.get("/", async () => ({ app: "MediDrop demo", status: "running" }));
+// Sample medicine pictures for WhatsApp cards. Only files named like m01.jpg are served.
+app.get("/img/:file", async (req, reply) => {
+  const file = (req.params as { file: string }).file;
+  if (!/^m\d{2}\.jpg$/.test(file)) return reply.code(404).send();
+  try {
+    const data = await readFile(join(process.cwd(), "public", "img", file));
+    return reply.type("image/jpeg").header("Cache-Control", "public, max-age=3600").send(data);
+  } catch {
+    return reply.code(404).send();
+  }
+});
 app.get("/health", async () => ({ ok: true, paynow: paynowConfigured ? "test mode" : "simulated" }));
 
 // Meta calls this once when you click "Verify and save".
