@@ -37,6 +37,8 @@ export const env = {
   PAYNOW_AUTH_EMAIL: optional("PAYNOW_AUTH_EMAIL"),
   PAYNOW_PAY_PHONE: optional("PAYNOW_PAY_PHONE"),
   IGNORE_HOURS: optional("IGNORE_HOURS").toLowerCase() === "true",
+  // OneMoney must also be enabled on the Paynow integration before turning this on.
+  ONEMONEY_ENABLED: optional("ONEMONEY_ENABLED").toLowerCase() === "true",
 };
 
 export const paynowConfigured = Boolean(

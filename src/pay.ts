@@ -5,7 +5,7 @@
 import paynowPkg from "paynow";
 import { env, paynowConfigured } from "./env";
 import { centsToPaynowAmount } from "./money";
-import { classifyStatus, toLocalNumber, type PaymentState } from "./paystatus";
+import { classifyStatus, type PaymentState } from "./paystatus";
 
 export type PayMethod = "ecocash" | "onemoney";
 
@@ -42,7 +42,7 @@ export async function startPayment(
   reference: string,
   description: string,
   totalCents: number,
-  customerPhone: string,
+  payerNumber: string, // local format 07XXXXXXXX
   method: PayMethod,
 ): Promise<StartResult> {
   if (!paynowConfigured) {
@@ -53,7 +53,8 @@ export async function startPayment(
     const paynow = client(orderId);
     const payment = paynow.createPayment(reference, env.PAYNOW_AUTH_EMAIL);
     payment.add(description, centsToPaynowAmount(totalCents));
-    const phone = env.PAYNOW_PAY_PHONE || toLocalNumber(customerPhone);
+    // PAYNOW_PAY_PHONE is a testing override only. Leave it unset so the payer's own number is billed.
+    const phone = env.PAYNOW_PAY_PHONE || payerNumber;
     const response = await paynow.sendMobile(payment, phone, method);
     if (!response) return { ok: false, error: "No response from Paynow" };
     if (!response.success || !response.pollUrl) {

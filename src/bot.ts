@@ -7,7 +7,6 @@ import { ZONES, type ZoneKey, findMedicines, getMedicine, getPharmacy, offersFor
 import { formatUsd, orderTotals } from "./money";
 import {
   type Order,
-  PRE_PAID,
   TERMINAL,
   checkDeliveryCode,
   newDeliveryCode,
@@ -15,6 +14,7 @@ import {
   transition,
 } from "./orders";
 import { checkPayment, startPayment, type PayMethod } from "./pay";
+import { formatLocalNumber, networkMatches, normalizeZwMobile } from "./paystatus";
 
 export type Incoming =
   | { from: string; kind: "text"; text: string }
@@ -38,6 +38,8 @@ type Step =
   | "WAIT_PHARMACIST"
   | "SUMMARY"
   | "PICK_METHOD"
+  | "CONFIRM_PAYER"
+  | "ASK_PAYER"
   | "WAIT_PAYMENT"
   | "PAY_FAILED";
 
@@ -48,6 +50,7 @@ interface Session {
   medicineId: string | null;
   zone: ZoneKey | null;
   orderId: string | null;
+  payMethod: PayMethod | null;
   updatedAt: number;
   reprompt: (() => Promise<unknown>) | null;
 }
@@ -75,7 +78,7 @@ const adminPhone = () => env.ADMIN_PHONE || env.PHARMACIST_PHONE;
 function session(phone: string): Session {
   let s = sessions.get(phone);
   if (!s) {
-    s = { step: "ASK_CONSENT", consent: null, name: null, medicineId: null, zone: null, orderId: null, updatedAt: Date.now(), reprompt: null };
+    s = { step: "ASK_CONSENT", consent: null, name: null, medicineId: null, zone: null, orderId: null, payMethod: null, updatedAt: Date.now(), reprompt: null };
     sessions.set(phone, s);
   }
   s.updatedAt = Date.now();
@@ -116,7 +119,8 @@ async function didntGetThat(to: string, s: Session): Promise<void> {
 
 function cancelDraft(to: string, s: Session): void {
   const order = currentOrder(s);
-  if (order && PRE_PAID.includes(order.status) && order.status !== "AWAITING_PAYMENT") {
+  // Only cancel orders still in the customer's hands. Orders waiting on Paynow or a pharmacist carry on.
+  if (order && (order.status === "DRAFT" || order.status === "QUOTED" || order.status === "PAYMENT_FAILED")) {
     transition(order, "CANCELLED", to);
   }
   s.orderId = null;
@@ -383,20 +387,38 @@ async function customer(m: Incoming): Promise<void> {
         return showMenu(to, s, "Order cancelled. Nothing was charged.");
       }
       if (id !== "pay:now") return didntGetThat(to, s);
-      s.step = "PICK_METHOD";
-      await prompt(s, () =>
-        wa.sendButtons(to, "How would you like to pay?", [
-          { id: "method:ecocash", title: "EcoCash" },
-          { id: "method:onemoney", title: "OneMoney" },
-        ]),
-      );
-      return;
+      return askPayMethod(to, s);
     }
 
     case "PICK_METHOD": {
+      if (id !== "method:ecocash" && id !== "method:onemoney") return didntGetThat(to, s);
+      s.payMethod = id.slice(7) as PayMethod;
+      return askPayer(to, s);
+    }
+
+    case "CONFIRM_PAYER": {
       const order = currentOrder(s);
-      if (!order || !id.startsWith("method:")) return didntGetThat(to, s);
-      return beginPayment(to, s, order, id.slice(7) as PayMethod);
+      const own = ownPayerNumber(to, s.payMethod);
+      if (!order || !s.payMethod) return didntGetThat(to, s);
+      if (id === "payer:self" && own) return beginPayment(to, s, order, s.payMethod, own);
+      if (id === "payer:other") return askOtherPayer(to, s);
+      return didntGetThat(to, s);
+    }
+
+    case "ASK_PAYER": {
+      const order = currentOrder(s);
+      if (!order || !s.payMethod) return didntGetThat(to, s);
+      const payer = normalizeZwMobile(text);
+      if (!payer) {
+        await wa.sendText(to, "That doesn't look like a Zimbabwe mobile number. Please type it like 0772 123 456.");
+        return;
+      }
+      if (!networkMatches(payer, s.payMethod)) {
+        const hint = s.payMethod === "ecocash" ? "EcoCash numbers start with 077 or 078." : "OneMoney numbers start with 071.";
+        await wa.sendText(to, `${formatLocalNumber(payer)} isn't a${s.payMethod === "ecocash" ? "n EcoCash" : " OneMoney"} number. ${hint} Please type another number.`);
+        return;
+      }
+      return beginPayment(to, s, order, s.payMethod, payer);
     }
 
     case "WAIT_PAYMENT":
@@ -406,16 +428,7 @@ async function customer(m: Incoming): Promise<void> {
     case "PAY_FAILED": {
       const order = currentOrder(s);
       if (!order) return didntGetThat(to, s);
-      if (id === "pay:now") {
-        s.step = "PICK_METHOD";
-        await prompt(s, () =>
-          wa.sendButtons(to, "How would you like to pay?", [
-            { id: "method:ecocash", title: "EcoCash" },
-            { id: "method:onemoney", title: "OneMoney" },
-          ]),
-        );
-        return;
-      }
+      if (id === "pay:now") return askPayMethod(to, s);
       if (id === "pay:cancel") {
         transition(order, "CANCELLED", to);
         s.orderId = null;
@@ -506,12 +519,53 @@ async function showSummary(to: string, s: Session, order: Order): Promise<void> 
   );
 }
 
-async function beginPayment(to: string, s: Session, order: Order, method: PayMethod): Promise<void> {
+async function askPayMethod(to: string, s: Session): Promise<void> {
+  if (!env.ONEMONEY_ENABLED) {
+    s.payMethod = "ecocash";
+    return askPayer(to, s);
+  }
+  s.step = "PICK_METHOD";
+  await prompt(s, () =>
+    wa.sendButtons(to, "How would you like to pay?", [
+      { id: "method:ecocash", title: "EcoCash" },
+      { id: "method:onemoney", title: "OneMoney" },
+    ]),
+  );
+}
+
+/** The customer's own WhatsApp number, if it can pay with this method. */
+function ownPayerNumber(whatsappNumber: string, method: PayMethod | null): string | null {
+  const local = normalizeZwMobile(whatsappNumber);
+  return local && method && networkMatches(local, method) ? local : null;
+}
+
+async function askPayer(to: string, s: Session): Promise<void> {
+  const own = ownPayerNumber(to, s.payMethod);
+  if (!own) return askOtherPayer(to, s);
+  const label = s.payMethod === "onemoney" ? "OneMoney" : "EcoCash";
+  s.step = "CONFIRM_PAYER";
+  await prompt(s, () =>
+    wa.sendButtons(to, `Pay with ${label} from this number (${formatLocalNumber(own)})?`, [
+      { id: "payer:self", title: "Yes, this number" },
+      { id: "payer:other", title: "Use another number" },
+    ]),
+  );
+}
+
+async function askOtherPayer(to: string, s: Session): Promise<void> {
+  const label = s.payMethod === "onemoney" ? "OneMoney" : "EcoCash";
+  s.step = "ASK_PAYER";
+  await prompt(s, () =>
+    wa.sendText(to, `Type the ${label} number that will pay (e.g. 0772 123 456). That phone will get the PIN prompt.`),
+  );
+}
+
+async function beginPayment(to: string, s: Session, order: Order, method: PayMethod, payer: string): Promise<void> {
   if (!transition(order, "AWAITING_PAYMENT", to)) return didntGetThat(to, s);
   const t = orderTotals(order.unitCents, order.qty, order.deliveryCents);
   order.paymentAttempts += 1;
   const reference = `${order.id}-${order.paymentAttempts}`;
-  const result = await startPayment(order.id, reference, `MediDrop order ${order.id}`, t.totalCents, to, method);
+  const result = await startPayment(order.id, reference, `MediDrop order ${order.id}`, t.totalCents, payer, method);
   if (!result.ok) {
     transition(order, "PAYMENT_FAILED", "paynow");
     return paymentFailed(to, s, "The payment couldn't start.");
@@ -519,8 +573,20 @@ async function beginPayment(to: string, s: Session, order: Order, method: PayMet
   order.payment = { reference, pollUrl: result.pollUrl, simulated: result.simulated, startedAt: Date.now() };
   s.step = "WAIT_PAYMENT";
   const demoNote = result.simulated ? "\n\n(Demo mode: this payment will confirm automatically.)" : "";
-  await wa.sendText(to, `📲 Check your phone and enter your PIN to approve ${formatUsd(t.totalCents)}.${demoNote}`);
+  const billed = env.PAYNOW_PAY_PHONE || payer;
+  const own = normalizeZwMobile(to);
+  const instruction =
+    billed === own
+      ? `📲 Check your phone and enter your PIN to approve ${formatUsd(t.totalCents)}.`
+      : `📲 We've sent a ${formatUsd(t.totalCents)} request to ${formatLocalNumber(billed)}. Ask them to enter their PIN to approve it.`;
+  await wa.sendText(to, `${instruction}${demoNote}`);
   watchPayment(order);
+}
+
+async function paymentFailedFor(order: Order, reason: string): Promise<void> {
+  const s = session(order.customer);
+  if (s.orderId === order.id) return paymentFailed(order.customer, s, reason);
+  await wa.sendText(order.customer, `❌ Payment for order ${order.id} didn't go through. You have not been charged.`);
 }
 
 async function paymentFailed(to: string, s: Session, reason: string): Promise<void> {
@@ -548,7 +614,7 @@ function watchPayment(order: Order): void {
       await confirmPayment(order.id);
       if (order.status === "AWAITING_PAYMENT" && Date.now() - order.payment.startedAt > PAYMENT_TIMEOUT_MS) {
         if (transition(order, "PAYMENT_FAILED", "timeout")) {
-          await paymentFailed(order.customer, session(order.customer), "The payment timed out.");
+          await paymentFailedFor(order, "The payment timed out.");
         }
       }
     })().catch((err) => console.error("[PAY] watcher error:", err instanceof Error ? err.message : err));
@@ -562,15 +628,17 @@ export async function confirmPayment(orderId: string): Promise<void> {
   const state = await checkPayment(order.payment.pollUrl, order.payment.simulated, order.payment.startedAt);
   if (state === "paid") return onPaid(order);
   if (state === "failed" && transition(order, "PAYMENT_FAILED", "paynow")) {
-    await paymentFailed(order.customer, session(order.customer), "The payment was cancelled or didn't go through.");
+    await paymentFailedFor(order, "The payment was cancelled or didn't go through.");
   }
 }
 
 async function onPaid(order: Order): Promise<void> {
   if (!transition(order, "PAID", "paynow")) return; // already handled
   const s = session(order.customer);
-  s.step = "MENU";
-  s.orderId = null;
+  if (s.orderId === order.id) {
+    s.step = "MENU";
+    s.orderId = null;
+  }
   const pharmacy = getPharmacy(order.pharmacyId);
   const med = getMedicine(order.medicineId);
   await wa.sendText(order.customer, `Payment received ✅\nOrder ${order.id} is with ${pharmacy?.name ?? "the pharmacy"}. I'll update you at every step.`);
@@ -613,11 +681,14 @@ async function pharmacist(m: Incoming): Promise<void> {
     if (action === "approve" && transition(order, "QUOTED", "pharmacist")) {
       await wa.sendText(to, `✅ Approved ${order.id}. The customer has been asked to pay.`);
       await wa.sendText(order.customer, "✅ Your script was approved by the pharmacist.");
+      s.orderId = order.id;
       return showSummary(order.customer, s, order);
     }
     if (action === "reject" && transition(order, "REJECTED", "pharmacist")) {
-      s.step = "MENU";
-      s.orderId = null;
+      if (s.orderId === order.id) {
+        s.step = "MENU";
+        s.orderId = null;
+      }
       await wa.sendText(to, `❌ Rejected ${order.id}. The customer has been told.`);
       await wa.sendButtons(
         order.customer,

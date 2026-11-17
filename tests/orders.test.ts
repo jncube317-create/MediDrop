@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { canTransition, checkDeliveryCode, newDeliveryCode, transition, type Order } from "../src/orders";
-import { classifyStatus, toLocalNumber } from "../src/paystatus";
+import { classifyStatus, formatLocalNumber, networkMatches, normalizeZwMobile, toLocalNumber } from "../src/paystatus";
 
 function makeOrder(overrides: Partial<Order> = {}): Order {
   return {
@@ -91,4 +91,22 @@ test("phone numbers convert to Paynow's local format", () => {
   assert.equal(toLocalNumber("263771111111"), "0771111111");
   assert.equal(toLocalNumber("+263 77 111 1111"), "0771111111");
   assert.equal(toLocalNumber("0771111111"), "0771111111");
+});
+
+test("typed payer numbers are cleaned or refused", () => {
+  assert.equal(normalizeZwMobile("0772 123 456"), "0772123456");
+  assert.equal(normalizeZwMobile("+263 78 964 5899"), "0789645899");
+  assert.equal(normalizeZwMobile("772123456"), "0772123456");
+  assert.equal(normalizeZwMobile("12345"), null);
+  assert.equal(normalizeZwMobile("0242123456"), null); // landline
+  assert.equal(normalizeZwMobile("+44 7700 900123"), null);
+});
+
+test("payer number must match the payment network", () => {
+  assert.equal(networkMatches("0772123456", "ecocash"), true);
+  assert.equal(networkMatches("0789645899", "ecocash"), true);
+  assert.equal(networkMatches("0712123456", "ecocash"), false);
+  assert.equal(networkMatches("0712123456", "onemoney"), true);
+  assert.equal(networkMatches("0772123456", "onemoney"), false);
+  assert.equal(formatLocalNumber("0772123456"), "0772 123 456");
 });
