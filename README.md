@@ -67,7 +67,15 @@ For the full demo, use 2–3 phones: one customer, one provider, and optionally 
 - Leads to providers who haven't messaged in 24 hours need approved **templates** in v1.
   The demo doesn't use templates.
 
-## Railway: run it next to MediDrop and Greens
+## Railway: reuse the Greens service (quickest)
+Scoutly reads the same variables as Greens, so nothing new is needed:
+1. Open the **Greens** service → **Settings → Source → Branch** → change `greens` to `scoutly`.
+2. Wait for the deploy, then open `https://<greens domain>/health` → `{"ok":true,"app":"Scoutly",...}`.
+
+The domain, verify token and Meta webhook stay the same. `STAFF_PHONE` becomes the admin phone
+(reports + STATS). Greens' other variables are ignored. To go back to Greens, set the branch back to `greens`.
+
+## Railway: run it as its own service
 1. In your Railway project: **+ New → GitHub Repo → MediDrop**.
 2. Open the new service → **Settings → Source → Branch** → `scoutly`.
 3. **Variables → Raw Editor**: paste from `.env.example` and fill in the values

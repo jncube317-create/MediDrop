@@ -29,7 +29,8 @@ export const env = {
   APP_NAME: optional("APP_NAME") || "Scoutly",
   CITY: optional("CITY") || "Bulawayo",
   // Optional: gets reports and can type STATS. Can also use the bot normally.
-  ADMIN_PHONE: digitsOnly(optional("ADMIN_PHONE")),
+  // Falls back to the Greens STAFF_PHONE so the Greens Railway service works unchanged.
+  ADMIN_PHONE: digitsOnly(optional("ADMIN_PHONE") || optional("STAFF_PHONE")),
   PUBLIC_URL: optional("PUBLIC_URL") || (railwayDomain ? `https://${railwayDomain}` : ""),
   // Sample providers reply automatically so a one-phone demo works. Set false for real use.
   SAMPLE_PROVIDERS: optional("SAMPLE_PROVIDERS").toLowerCase() !== "false",
