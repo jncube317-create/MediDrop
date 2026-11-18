@@ -227,7 +227,7 @@ async function customer(m: Incoming): Promise<void> {
         if (!cat) return didntGetThat(to, s);
         s.step = "BROWSE";
         await wa.sendText(to, `*${cat.name}*`);
-        await sendProductChoices(to, productsIn(cat.key), "Tap *Add to cart* on anything you want:");
+        await sendProductCards(to, productsIn(cat.key), "Tap 🛒 *Add to cart* on anything you want.");
         return;
       }
       // Typing a product name works from these steps.
@@ -372,35 +372,49 @@ async function showCategories(to: string, s: Session): Promise<void> {
 }
 
 function cardText(p: Product): string {
-  return `*${p.name}*\n${p.size} · ${p.inStock ? formatUsd(p.priceCents) : "Out of stock"}`;
+  const price = p.inStock ? `*${formatUsd(p.priceCents)}*` : "*Out of stock*";
+  return `*${p.name}*\n${p.size} · ${price}\n\n${p.blurb}`;
 }
 
-/** Swipeable picture cards; falls back to a plain list if pictures can't be sent. */
-async function sendProductChoices(to: string, products: Product[], body: string): Promise<void> {
-  const shown = products.slice(0, 10);
-  const cards = shown.flatMap((p) => {
-    const imageUrl = productImageUrl(env.PUBLIC_URL, p.id);
-    return imageUrl ? [{ imageUrl, text: cardText(p), buttons: [{ id: `add:${p.id}`, title: "Add to cart" }] }] : [];
-  });
-  if (cards.length === shown.length && cards.length >= 2) {
-    if (await wa.sendCarousel(to, body, cards)) return;
-    console.warn("[WA] carousel refused; sending plain photos + list instead");
-  }
-  // Fallback: one photo per product (most reliable message type), then a list to tap.
-  if (cards.length === shown.length) {
+const CARD_FOOTER = () => `${env.STORE_NAME} · pay with EcoCash, collect in store`.slice(0, 60);
+const MAX_CARDS = 5;
+
+/**
+ * One picture card per product: photo, name, size, price, description and an
+ * "Add to cart" button. Falls back to a plain list if pictures can't be sent.
+ */
+async function sendProductCards(to: string, products: Product[], intro: string): Promise<void> {
+  const shown = products.slice(0, MAX_CARDS);
+  const canShowPictures = shown.every((p) => productImageUrl(env.PUBLIC_URL, p.id));
+  if (canShowPictures) {
+    let allSent = true;
     for (const p of shown) {
-      const imageUrl = productImageUrl(env.PUBLIC_URL, p.id);
-      if (imageUrl) await wa.sendImageLink(to, imageUrl, `${p.name} · ${p.inStock ? formatUsd(p.priceCents) : "Out of stock"}`);
+      const sent = await wa.sendButtons(to, cardText(p), [{ id: `add:${p.id}`, title: "🛒 Add to cart" }], {
+        imageUrl: productImageUrl(env.PUBLIC_URL, p.id) ?? undefined,
+        footer: CARD_FOOTER(),
+      });
+      if (!sent) {
+        allSent = false;
+        break;
+      }
     }
+    if (allSent) {
+      await wa.sendButtons(to, intro, [
+        { id: "menu:shop", title: "Other sections" },
+        { id: "menu:cart", title: "View cart" },
+      ]);
+      return;
+    }
+    console.warn("[WA] picture card refused; sending a plain list instead");
   } else {
     console.warn(`[IMG] No public URL, so no pictures. PUBLIC_URL="${env.PUBLIC_URL}"`);
   }
-  const rows = shown.map((p) => ({
+  const rows = products.slice(0, 10).map((p) => ({
     id: `add:${p.id}`,
     title: p.name,
     description: p.inStock ? `${formatUsd(p.priceCents)} · ${p.size}` : `Out of stock · ${p.size}`,
   }));
-  await wa.sendList(to, `${body.replace("Tap *Add to cart* on", "Tap")}`, "See products", rows, "Products");
+  await wa.sendList(to, "Tap a product to add it to your cart:", "See products", rows, "Products");
 }
 
 async function search(to: string, s: Session, query: string): Promise<void> {
@@ -414,18 +428,8 @@ async function search(to: string, s: Session, query: string): Promise<void> {
     return;
   }
   s.step = "BROWSE";
-  const first = matches[0];
-  if (matches.length === 1 && first) {
-    const imageUrl = productImageUrl(env.PUBLIC_URL, first.id);
-    if (imageUrl) await wa.sendImageLink(to, imageUrl, `${first.name} (sample image)`);
-    await wa.sendButtons(to, cardText(first), [
-      { id: `add:${first.id}`, title: "Add to cart" },
-      { id: "menu:shop", title: "Keep shopping" },
-      { id: "menu:cart", title: "My cart" },
-    ]);
-    return;
-  }
-  await sendProductChoices(to, matches, "Here's what I found. Tap *Add to cart* on anything you want:");
+  const more = matches.length > MAX_CARDS ? ` Showing the first ${MAX_CARDS}; type a more exact name to narrow it down.` : "";
+  await sendProductCards(to, matches, `Tap 🛒 *Add to cart* on anything you want.${more}`);
 }
 
 async function addProduct(to: string, s: Session, productId: string): Promise<void> {

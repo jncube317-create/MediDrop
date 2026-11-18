@@ -24,18 +24,19 @@ export interface Product {
   priceCents: number;
   inStock: boolean;
   maxQty: number; // per order
+  blurb: string; // short description on the product card
   aliases: string[];
 }
 
 export const PRODUCTS: Product[] = [
-  { id: "g01", name: "Proton White Loaf", size: "Standard loaf", category: "fresh", priceCents: 110, inStock: true, maxQty: 6, aliases: ["bread", "loaf", "proton", "white bread"] },
-  { id: "g02", name: "Potatoes 10kg pocket", size: "10kg pocket", category: "fresh", priceCents: 700, inStock: true, maxQty: 3, aliases: ["potato", "potatoes", "pocket", "amazambane", "mbatatisi"] },
-  { id: "g03", name: "Kellogg's Noodles Curry", size: "70g · Durban curry", category: "cupboard", priceCents: 50, inStock: true, maxQty: 20, aliases: ["noodles", "kelloggs", "kellogg", "instant noodles", "curry noodles"] },
-  { id: "g04", name: "Mazoe Orange Crush 2L", size: "2 litres", category: "cupboard", priceCents: 400, inStock: true, maxQty: 6, aliases: ["mazoe", "orange crush", "juice", "cordial", "drink"] },
-  { id: "g05", name: "Dairy Milk Oreo 162g", size: "162g slab", category: "cupboard", priceCents: 350, inStock: true, maxQty: 6, aliases: ["chocolate", "cadbury", "dairy milk", "oreo", "choc", "slab"] },
-  { id: "g06", name: "Sta-soft Baby 2L", size: "2 litres", category: "household", priceCents: 450, inStock: true, maxQty: 4, aliases: ["sta soft", "stasoft", "fabric softener", "softener", "conditioner"] },
-  { id: "g07", name: "OMO Auto Liquid 750ml", size: "750ml · equals 2kg powder", category: "household", priceCents: 400, inStock: true, maxQty: 4, aliases: ["omo", "washing liquid", "detergent", "washing powder", "washing"] },
-  { id: "g08", name: "Nivea Roll-on 50ml", size: "Fresh Flower · 50ml", category: "household", priceCents: 300, inStock: true, maxQty: 4, aliases: ["nivea", "roll on", "rollon", "deodorant", "roll-on"] },
+  { id: "g01", name: "Proton White Loaf", size: "Standard loaf", category: "fresh", priceCents: 110, inStock: true, maxQty: 6, blurb: "Soft, fresh sliced white bread from Proton, baking since 1961. Perfect for breakfast and school lunches.", aliases: ["bread", "loaf", "proton", "white bread"] },
+  { id: "g02", name: "Potatoes 10kg pocket", size: "10kg pocket", category: "fresh", priceCents: 700, inStock: true, maxQty: 3, blurb: "A full 10kg pocket of firm, fresh potatoes. Enough for chips, stews and roasts all week.", aliases: ["potato", "potatoes", "pocket", "amazambane", "mbatatisi"] },
+  { id: "g03", name: "Kellogg's Noodles Curry", size: "70g · Durban curry", category: "cupboard", priceCents: 50, inStock: true, maxQty: 20, blurb: "Ready in minutes: instant noodles with a spicy Durban curry flavour. A quick lunch or late-night snack.", aliases: ["noodles", "kelloggs", "kellogg", "instant noodles", "curry noodles"] },
+  { id: "g04", name: "Mazoe Orange Crush 2L", size: "2 litres", category: "cupboard", priceCents: 400, inStock: true, maxQty: 6, blurb: "Zimbabwe's favourite orange crush. Mix with cold water for a refreshing drink the whole family loves.", aliases: ["mazoe", "orange crush", "juice", "cordial", "drink"] },
+  { id: "g05", name: "Dairy Milk Oreo 162g", size: "162g slab", category: "cupboard", priceCents: 350, inStock: true, maxQty: 6, blurb: "Creamy Cadbury Dairy Milk with crunchy Oreo biscuit pieces and vanilla creme. Made for sharing.", aliases: ["chocolate", "cadbury", "dairy milk", "oreo", "choc", "slab"] },
+  { id: "g06", name: "Sta-soft Baby 2L", size: "2 litres", category: "household", priceCents: 450, inStock: true, maxQty: 4, blurb: "Gentle fabric softener made for baby's delicate skin. Leaves clothes soft and smelling fresh.", aliases: ["sta soft", "stasoft", "fabric softener", "softener", "conditioner"] },
+  { id: "g07", name: "OMO Auto Liquid 750ml", size: "750ml · equals 2kg powder", category: "household", priceCents: 400, inStock: true, maxQty: 4, blurb: "Tough on stains in automatic machines. This 750ml bottle washes like a 2kg box of powder.", aliases: ["omo", "washing liquid", "detergent", "washing powder", "washing"] },
+  { id: "g08", name: "Nivea Roll-on 50ml", size: "Fresh Flower · 50ml", category: "household", priceCents: 300, inStock: true, maxQty: 4, blurb: "Fresh Flower roll-on with up to 48-hour protection and a light floral scent.", aliases: ["nivea", "roll on", "rollon", "deodorant", "roll-on"] },
 ];
 
 export function getProduct(id: string): Product | undefined {

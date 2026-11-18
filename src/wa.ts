@@ -35,8 +35,13 @@ export async function sendText(to: string, body: string): Promise<boolean> {
   return postMessage({ to, type: "text", text: { body, preview_url: false } });
 }
 
-export async function sendButtons(to: string, body: string, buttons: Button[]): Promise<boolean> {
-  const problem = validateButtons(body, buttons);
+export interface ButtonExtras {
+  imageUrl?: string; // public https picture shown above the text
+  footer?: string; // small grey line under the text, max 60 chars
+}
+
+export async function sendButtons(to: string, body: string, buttons: Button[], extras: ButtonExtras = {}): Promise<boolean> {
+  const problem = validateButtons(body, buttons) ?? (extras.footer && extras.footer.length > 60 ? "footer over 60 chars" : null);
   if (problem) {
     console.error(`[WA] refused to send buttons: ${problem}`);
     return false;
@@ -46,7 +51,9 @@ export async function sendButtons(to: string, body: string, buttons: Button[]): 
     type: "interactive",
     interactive: {
       type: "button",
+      ...(extras.imageUrl ? { header: { type: "image", image: { link: extras.imageUrl } } } : {}),
       body: { text: body },
+      ...(extras.footer ? { footer: { text: extras.footer } } : {}),
       action: { buttons: buttons.map((b) => ({ type: "reply", reply: { id: b.id, title: b.title } })) },
     },
   });

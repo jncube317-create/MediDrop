@@ -32,7 +32,7 @@ const graph = createServer((req, res) => {
       if (p.type === "text") body = p.text.body;
       if (p.type === "image") body = `[image] ${p.image.link} · ${p.image.caption}`;
       if (i?.type === "button") {
-        body = i.body.text;
+        body = `${i.header?.image ? `[photo ${String(i.header.image.link).split("/").pop()}] ` : ""}${i.body.text}${i.footer ? `\n— ${i.footer.text}` : ""}`;
         options.push(...i.action.buttons.map((b: any) => `${b.reply.id} "${b.reply.title}"`));
       }
       if (i?.type === "list") {
@@ -127,7 +127,7 @@ async function main(): Promise<void> {
 
     await send(CUSTOMER, { reply: "menu:shop" });
     r = await send(CUSTOMER, { reply: "cat:cupboard" });
-    check(r.some((m) => m.type === "carousel"), "food & drinks show as picture cards");
+    check(r.filter((m) => /^\[photo g0\d\.jpg\]/.test(m.body) && m.options.some((o) => o.includes("Add to cart"))).length === 3, "food & drinks show as 3 picture cards with Add to cart");
     r = await send(CUSTOMER, { reply: "add:g04" });
     await send(CUSTOMER, { reply: "add:g04" });
     await send(CUSTOMER, { reply: "add:g05" });

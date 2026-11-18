@@ -47,3 +47,9 @@ test("image links only when the server has a public https address", () => {
 test("QR holds only the order number and pickup code", () => {
   assert.equal(qrText("GR-2041", "483920"), "GREENS:GR-2041:483920");
 });
+
+test("every product has a short description for its card", () => {
+  for (const p of PRODUCTS) {
+    assert.ok(p.blurb.length >= 20 && p.blurb.length <= 160, `${p.id}: ${p.blurb.length}`);
+  }
+});
