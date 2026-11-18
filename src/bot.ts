@@ -44,6 +44,7 @@ type Step =
   | "NEED_CATEGORY"
   | "NEED_TEXT"
   | "NEED_WHEN"
+  | "NEED_BUDGET"
   | "NEED_CONFIRM"
   | "OFFER_CATEGORY"
   | "OFFER_TEXT"
@@ -58,6 +59,7 @@ interface Draft {
   category?: string;
   text?: string;
   when?: When;
+  budget?: string | null;
   coversAll?: boolean;
   price?: string | null;
   bundle?: string;
@@ -70,7 +72,8 @@ interface User {
   step: Step;
   draft: Draft;
   changingArea: null | "menu" | "need";
-  pendingLeadId: string | null; // lead waiting for a credit top-up
+  pendingLeadId: string | null; // provider lead waiting for a credit top-up
+  pendingConnId: string | null; // customer swap waiting for a credit top-up
   purchaseId: string | null;
   updatedAt: number;
   reprompt: (() => Promise<unknown>) | null;
@@ -83,6 +86,7 @@ interface Need {
   area: string;
   text: string;
   when: When;
+  budget: string | null;
   createdAt: number;
   status: "OPEN" | "CLOSED" | "EXPIRED";
   connections: number;
@@ -123,7 +127,7 @@ const DRAFT_TIMEOUT_MS = 30 * 60 * 1000;
 const NEED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PAYMENT_TIMEOUT_MS = 10 * 60 * 1000;
 const DRAFT_STEPS: Step[] = [
-  "NEED_CATEGORY", "NEED_TEXT", "NEED_WHEN", "NEED_CONFIRM",
+  "NEED_CATEGORY", "NEED_TEXT", "NEED_WHEN", "NEED_BUDGET", "NEED_CONFIRM",
   "OFFER_CATEGORY", "OFFER_TEXT", "OFFER_COVER", "OFFER_PRICE", "OFFER_CONFIRM",
   "BUY_PAYER", "BUY_OTHER_NUMBER",
 ];
@@ -162,7 +166,7 @@ seedSamples();
 function user(phone: string): { u: User; timedOut: boolean } {
   let u = users.get(phone);
   if (!u) {
-    u = { phone, name: null, area: null, step: "ASK_CONSENT", draft: {}, changingArea: null, pendingLeadId: null, purchaseId: null, updatedAt: Date.now(), reprompt: null };
+    u = { phone, name: null, area: null, step: "ASK_CONSENT", draft: {}, changingArea: null, pendingLeadId: null, pendingConnId: null, purchaseId: null, updatedAt: Date.now(), reprompt: null };
     users.set(phone, u);
   }
   const timedOut = DRAFT_STEPS.includes(u.step) && Date.now() - u.updatedAt > DRAFT_TIMEOUT_MS;
@@ -233,7 +237,7 @@ async function conversation(m: Incoming): Promise<void> {
   // First contact: consent → name → area.
   if (u.step === "ASK_CONSENT") {
     if (id === "consent:yes") {
-      console.log(`[CONSENT] ...${to.slice(-4)} agreed at ${new Date().toISOString()} (text v1)`);
+      console.log(`[CONSENT] ...${to.slice(-4)} agreed at ${new Date().toISOString()} (text v2, incl. no-liability clause)`);
       u.step = "ASK_NAME";
       await wa.sendText(to, "Thank you 🙏 What's your first name?");
       return;
@@ -259,7 +263,13 @@ async function conversation(m: Incoming): Promise<void> {
       return needSummary(u);
     }
     u.changingArea = null;
-    if (first) return showMenu(u, `Welcome to ${env.APP_NAME}, ${u.name} 👋\n\nTell us what you're looking for and we'll find people near you who offer it. Or list your own skill or goods and get customers.`);
+    if (first) {
+      ledger.welcome(u.phone, WELCOME_CREDITS);
+      return showMenu(
+        u,
+        `Welcome to ${env.APP_NAME}, ${u.name} 👋\n\nPost what you're looking for and we'll send it to people near you who offer it. Selling something or offering a service? List it once and buyers come to you.\n\n🎁 You have ${WELCOME_CREDITS} free credits. 1 credit = 1 number swap.`,
+      );
+    }
     return showMenu(u, `📍 Area updated to ${area.name}.`);
   }
 
@@ -357,6 +367,13 @@ async function conversation(m: Incoming): Promise<void> {
       const when = id.startsWith("when:") ? (id.slice(5) as When) : null;
       if (!when || !(when in WHEN_LABEL)) return didntGetThat(u);
       u.draft.when = when;
+      return askBudget(u);
+    }
+
+    case "NEED_BUDGET": {
+      if (id === "budget:skip") u.draft.budget = null;
+      else if (text) u.draft.budget = text.replace(/\s+/g, " ").slice(0, 40);
+      else return didntGetThat(u);
       return needSummary(u);
     }
 
@@ -420,7 +437,7 @@ async function conversation(m: Incoming): Promise<void> {
 async function askConsent(to: string): Promise<void> {
   await wa.sendButtons(
     to,
-    `👋 Welcome to *${env.APP_NAME}*.\n\nWe connect people who need something with people in ${env.CITY} who offer it: carpenters, mechanics, plumbers, sellers and more.\n\nWe store your name, area and posts. Your number is only shared with people you say yes to. Do you agree?`,
+    `👋 Welcome to *${env.APP_NAME}*.\n\nWe connect people who need something with people in ${env.CITY} who offer it: carpenters, mechanics, plumbers, sellers and more.\n\nWe store your name, area and posts. Your number is only shared with people you say yes to.\n\n⚖️ ${env.APP_NAME} only connects you. We aren't part of any deal and aren't responsible for it. Always check people and items yourself.\n\nDo you agree?`,
     [
       { id: "consent:yes", title: "I agree" },
       { id: "consent:no", title: "No thanks" },
@@ -465,7 +482,7 @@ async function showMenu(u: User, greeting: string): Promise<void> {
 async function showHelp(u: User): Promise<void> {
   await wa.sendText(
     u.phone,
-    `*How ${env.APP_NAME} works*\n\n🔎 *Looking for something?* Post it. We send it to people near you who offer it. They send you their profile, and you choose who gets your number.\n\n🛠 *Offer a skill or sell things?* List yourself. Matching jobs come to you here. Tap *Interested*, and if the customer accepts, you swap numbers. That uses 1 credit. If they say no, you use nothing.\n\n🎁 New listings get ${WELCOME_CREDITS} free credits. More from ${formatUsd(BUNDLES[0]?.cents ?? 100)}.\n\nType MENU any time.`,
+    `*How ${env.APP_NAME} works*\n\n🔎 *Looking for something?* Post it. We send it to people near you who offer it. They send you their profile, and you choose who gets your number.\n\n🛠 *Offer a skill or sell things?* List yourself. Matching jobs come to you here. Tap *Interested*, and if the customer accepts, you swap numbers. That uses 1 credit. If they say no, you use nothing.\n\n💳 Swapping numbers uses 1 credit from each side. Everyone gets ${WELCOME_CREDITS} free credits on sign-up. More from ${formatUsd(BUNDLES[0]?.cents ?? 100)}.\n\n⚖️ ${env.APP_NAME} only connects you. We aren't part of any deal and aren't responsible for it.\n\nType MENU any time.`,
   );
 }
 
@@ -507,13 +524,24 @@ async function askWhen(u: User): Promise<void> {
   );
 }
 
+async function askBudget(u: User): Promise<void> {
+  u.step = "NEED_BUDGET";
+  await prompt(u, () =>
+    wa.sendButtons(
+      u.phone,
+      "What's your budget? Type an amount, e.g. _$5_ or _$3,000_.\n\nA budget gets you better replies: people know you're serious.",
+      [{ id: "budget:skip", title: "Not sure yet" }],
+    ),
+  );
+}
+
 async function needSummary(u: User): Promise<void> {
   u.step = "NEED_CONFIRM";
   const d = u.draft;
   await prompt(u, () =>
     wa.sendButtons(
       u.phone,
-      `*Check your post*\n\n🔎 "${d.text}"\n🛠 ${catName(d.category ?? "")}\n📍 ${areaName(u.area ?? "")}\n⏱ ${WHEN_LABEL[d.when ?? "flexible"]}\n\nYour number stays private. People who can help send you their profile, and you choose who gets your number.`,
+      `*Check your post*\n\n🔎 "${d.text}"\n🛠 ${catName(d.category ?? "")}\n📍 ${areaName(u.area ?? "")}\n⏱ ${WHEN_LABEL[d.when ?? "flexible"]}\n💵 Budget: ${d.budget ?? "not sure yet"}\n\nYour number stays private. People who can help send you their profile, and you choose who gets your number.`,
       [
         { id: "need:post", title: "Post it" },
         { id: "area:change", title: "Change area" },
@@ -533,6 +561,7 @@ async function createNeed(u: User): Promise<void> {
     area: u.area,
     text: d.text,
     when: d.when,
+    budget: d.budget ?? null,
     createdAt: Date.now(),
     status: "OPEN",
     connections: 0,
@@ -574,7 +603,7 @@ async function askOfferText(u: User): Promise<void> {
   await prompt(u, () =>
     wa.sendText(
       u.phone,
-      "Describe what you do or sell, in one or two lines. Customers see this.\n\nFor example: _Carpenter. Wardrobes, doors, kitchen units. 10 years' experience._",
+      "Describe what you sell or the service you offer, in one or two lines. Buyers see this.\n\nFor example:\n_Selling Toyota Vitz 2010, 95,000 km, very clean._\n_Carpenter. Wardrobes, doors, kitchen units. 10 years' experience._",
     ),
   );
 }
@@ -592,7 +621,7 @@ async function askCover(u: User): Promise<void> {
 async function askPrice(u: User): Promise<void> {
   u.step = "OFFER_PRICE";
   await prompt(u, () =>
-    wa.sendButtons(u.phone, "Want to show a starting price? Type it, e.g. _From $15 call-out_. Or tap Skip.", [{ id: "price:skip", title: "Skip" }]),
+    wa.sendButtons(u.phone, "What's your asking price or starting price? Type it, e.g. _$3,000_ or _From $15 call-out_. Or tap Skip.", [{ id: "price:skip", title: "Skip" }]),
   );
 }
 
@@ -635,11 +664,10 @@ async function createOffer(u: User): Promise<void> {
   u.draft = {};
   u.step = "MENU";
   u.reprompt = null;
-  const gotWelcome = ledger.welcome(u.phone, WELCOME_CREDITS);
   console.log(`[OFFER] ${offer.id} listed (${offer.category})`);
   await wa.sendText(
     u.phone,
-    `✅ *You're listed* (${offer.id})\n🛠 ${catName(offer.category)} · 📍 ${coverage(offer)}\n\nWhen someone posts a matching job, it comes to you here. Tap *Interested* and we'll show them your profile.${gotWelcome ? `\n\n🎁 You got ${WELCOME_CREDITS} free credits. 1 credit = 1 customer number, used only when they accept.` : ""}`,
+    `✅ *You're listed* (${offer.id})\n🛠 ${catName(offer.category)} · 📍 ${coverage(offer)}\n\nWhen someone near you posts that they're looking for this, it comes to you here. No more posting in groups and hoping. Tap *Interested* and we'll show them your listing.\n\nYou have ${plural(ledger.balance(u.phone), "credit")}. 1 credit is used only when a buyer accepts and you swap numbers.`,
   );
 
   // Open needs posted before this listing existed.
@@ -682,7 +710,7 @@ async function sendLeadToProvider(lead: Lead): Promise<void> {
   const balance = ledger.balance(lead.provider);
   await wa.sendButtons(
     lead.provider,
-    `📣 *New lead · ${catName(need.category)}*\n\n"${need.text}"\n📍 ${areaName(need.area)} · ⏱ ${WHEN_LABEL[need.when]}\n\nInterested? We'll show them your profile. You only use 1 credit if they accept and you swap numbers.\n\nYour balance: ${plural(balance, "credit")}.`,
+    `📣 *New lead · ${catName(need.category)}*\n\n"${need.text}"\n📍 ${areaName(need.area)} · ⏱ ${WHEN_LABEL[need.when]}\n💵 Budget: ${need.budget ?? "not given"}\n\nInterested? We'll show them your profile. You only use 1 credit if they accept and you swap numbers.\n\nYour balance: ${plural(balance, "credit")}.`,
     [
       { id: `lead:yes:${lead.id}`, title: "Interested" },
       { id: `lead:no:${lead.id}`, title: "Not for me" },
@@ -737,7 +765,7 @@ async function introduceProvider(lead: Lead): Promise<void> {
   if (!offer || !need) return;
   await wa.sendButtons(
     lead.customer,
-    `🙋 *${offer.name}* can help with "${fit(need.text, 60)}"\n\n🛠 ${catName(offer.category)}\n📍 ${coverage(offer)}\n${ratingLine(offer)}\n"${offer.text}"${offer.price ? `\n💵 ${offer.price}` : ""}\n\nSwap numbers with ${offer.name}?`,
+    `🙋 *${offer.name}* can help with "${fit(need.text, 60)}"\n\n🛠 ${catName(offer.category)}\n📍 ${coverage(offer)}\n${ratingLine(offer)}\n"${offer.text}"${offer.price ? `\n💵 ${offer.price}` : ""}\n\nSwap numbers with ${offer.name}? Uses 1 of your credits (you have ${ledger.balance(lead.customer)}).`,
     [
       { id: `conn:yes:${lead.id}`, title: "Swap numbers" },
       { id: `conn:no:${lead.id}`, title: "No thanks" },
@@ -765,6 +793,21 @@ async function customerResponds(to: string, leadId: string, accept: boolean): Pr
     return;
   }
 
+  const customerKey = `${lead.id}:c`;
+  if (!ledger.isHeld(customerKey) && !ledger.hold(to, customerKey)) {
+    const u = users.get(to);
+    if (u) u.pendingConnId = lead.id;
+    await wa.sendButtons(
+      to,
+      `You need 1 credit to swap numbers with ${offer.name}. You have ${plural(ledger.balance(to), "credit")}.\n\nBuy credits and we'll swap numbers straight after payment.`,
+      [
+        { id: "menu:credits", title: "Buy credits" },
+        { id: `conn:no:${lead.id}`, title: "No thanks" },
+      ],
+    );
+    return;
+  }
+  ledger.capture(customerKey);
   moveLead(lead, "CONNECTED");
   ledger.capture(lead.id);
   need.connections += 1;
@@ -772,11 +815,11 @@ async function customerResponds(to: string, leadId: string, accept: boolean): Pr
   console.log(`[CONNECT] ${lead.id} need ${need.id} ↔ offer ${offer.id}`);
   await wa.sendText(
     to,
-    `✅ *You're connected with ${offer.name}*\n📞 ${prettyPhone(offer.owner)}\n💬 Chat now: ${chatLink(offer.owner)}\n\nAgree the price and timing before any work starts. Never pay a deposit before you've met them and seen the work or item.\n\nWhen it's done, rate them in *My posts*.${offer.sample ? "\n\n(Sample provider: this number isn't real.)" : ""}`,
+    `✅ *You're connected with ${offer.name}*\n📞 ${prettyPhone(offer.owner)}\n💬 Chat now: ${chatLink(offer.owner)}\n\nAgree the price and timing before any work starts. Never pay a deposit before you've met them and seen the work or item.\n\nWhen it's done, rate them in *My posts*.\n\n1 credit used. Balance: ${plural(ledger.balance(to), "credit")}.\n⚖️ ${env.APP_NAME} only connects you. We aren't part of any deal and aren't responsible for it.${offer.sample ? "\n\n(Sample provider: this number isn't real.)" : ""}`,
   );
   await tell(
     lead.provider,
-    `✅ *New customer: ${nameOf(to)}*\nLooking for: "${need.text}"\n📍 ${areaName(need.area)} · ⏱ ${WHEN_LABEL[need.when]}\n📞 ${prettyPhone(to)}\n💬 Chat now: ${chatLink(to)}\n\n1 credit used. Balance: ${plural(ledger.balance(lead.provider), "credit")}.`,
+    `✅ *New customer: ${nameOf(to)}*\nLooking for: "${need.text}"\n📍 ${areaName(need.area)} · ⏱ ${WHEN_LABEL[need.when]}\n📞 ${prettyPhone(to)}\n💬 Chat now: ${chatLink(to)}${need.budget ? `\n💵 Budget: ${need.budget}` : ""}\n\n1 credit used. Balance: ${plural(ledger.balance(lead.provider), "credit")}.\n⚖️ ${env.APP_NAME} only connects you. We aren't part of any deal and aren't responsible for it.`,
   );
   if (need.connections >= MAX_CONNECTIONS_PER_NEED) {
     await closeNeed(need, "CLOSED");
@@ -965,12 +1008,12 @@ async function showCredits(u: User): Promise<void> {
   await prompt(u, () =>
     wa.sendList(
       u.phone,
-      `💳 You have *${plural(ledger.balance(u.phone), "credit")}*.\n\n1 credit = 1 customer number. You only use it when a customer accepts. If they say no, it comes back.`,
+      `💳 You have *${plural(ledger.balance(u.phone), "credit")}*.\n\n1 credit = 1 number swap, for buyers and sellers alike. Sellers only use it when the buyer accepts. If they say no, it comes back.`,
       "Buy credits",
       BUNDLES.map((b) => ({
         id: `buy:${b.key}`,
         title: `${plural(b.credits, "credit")} · ${formatUsd(b.cents)}`,
-        description: `${formatUsd(Math.round(b.cents / b.credits))} per customer contact`,
+        description: `${formatUsd(Math.round(b.cents / b.credits))} per number swap`,
       })),
       "Bundles",
     ),
@@ -1068,6 +1111,11 @@ async function purchasePaid(p: Purchase): Promise<void> {
   if (u && waiting) {
     u.pendingLeadId = null;
     if (leads.get(waiting)?.status === "OFFERED") await providerResponds(p.phone, waiting, true);
+  }
+  const swap = u?.pendingConnId;
+  if (u && swap) {
+    u.pendingConnId = null;
+    if (leads.get(swap)?.status === "INTERESTED") await customerResponds(p.phone, swap, true);
   }
 }
 

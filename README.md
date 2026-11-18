@@ -5,22 +5,31 @@ carpenters, mechanics, plumbers, hairdressers and anyone selling things.
 Everything happens on one WhatsApp number. Nobody downloads an app.
 
 ## How it works
-1. **Someone posts what they need.** Tap *I'm looking for…*, or just type it, e.g. "my wardrobe door is broken".
+1. **Someone posts what they need, with a budget.** Tap *I'm looking for…*, or just type it, e.g. "barber in town, $5"
+   or "Toyota Vitz under $3,000". The budget makes every lead a qualified lead.
 2. **Scoutly sends it to matching providers** in the same category, nearest first.
    Providers who cover all of Bulawayo get jobs from every area.
-3. **A provider taps *Interested*.** The customer sees their profile: rating, jobs done, price, description.
+3. **A provider or seller taps *Interested*.** They see the budget first. The customer sees their profile: rating, jobs done, asking price, description.
 4. **The customer chooses.** *Swap numbers* sends each of them the other's number and a chat link.
    *No thanks* keeps the customer's number private. *Report* flags the provider.
 5. **After the job**, the customer rates the provider in *My posts*. Ratings show on future leads.
 
 The customer's number is never shared until they say yes.
 
-## How it makes money: credits
-- 1 credit = 1 customer number. The provider pays only when the customer accepts.
-- When a provider taps *Interested*, 1 credit is **held**. Accepted → spent. Declined, expired or post closed → given back.
-- New listings get **3 free credits**. Bundles (placeholder prices in `src/data.ts`):
+Sellers list once instead of posting in WhatsApp and Facebook groups and hoping:
+every buyer who later posts in their category is sent to them.
 
-| Bundle | Price | Per contact |
+**No liability:** people agree at sign-up, and are reminded on every swap, that
+"Scoutly only connects you. We aren't part of any deal and aren't responsible for it."
+(Have a local lawyer check the wording before launch.)
+
+## How it makes money: credits, paid by both sides
+- 1 credit = 1 number swap. **Both** the customer and the provider use 1 credit when they swap numbers.
+- When a provider taps *Interested*, 1 credit is **held**. Swapped → spent. Declined, expired or post closed → given back.
+- If either side has no credits, they're asked to buy some, and the lead or swap continues by itself after payment.
+- Everyone gets **3 free credits** on sign-up. Bundles (placeholder prices in `src/data.ts`):
+
+| Bundle | Price | Per swap |
 |---|---|---|
 | 2 credits | $1.00 | $0.50 |
 | 5 credits | $2.00 | $0.40 |
@@ -39,7 +48,7 @@ The customer's number is never shared until they say yes.
 
 ## Categories and areas
 Carpentry & furniture · Mechanic & car repair · Plumbing · Electrical & solar · Building & painting ·
-Hair & beauty · Car parts · Phones & electronics · Clothes & shoes · Something else.
+Hair & beauty · Cars & car parts · Phones & electronics · Clothes & shoes · Something else.
 
 Areas: City centre, Northern, Eastern, Southern and Western suburbs, Outside Bulawayo.
 Change both in `src/data.ts`.
@@ -54,7 +63,7 @@ For the full demo, use 2–3 phones: one customer, one provider, and optionally 
 
 **Demo script**
 1. Phone A (provider): *hi* → agree → name → area → *I offer or sell…* → Carpentry → describe → *All of Bulawayo* → Skip → *List me*.
-2. Phone B (customer): *hi* → agree → name → same area → type *my wardrobe door is broken* → Carpentry → *This week* → *Post it*.
+2. Phone B (customer): *hi* → agree → name → same area → type *my wardrobe door is broken* → Carpentry → *This week* → type *$40* → *Post it*.
 3. Phone A gets the lead → *Interested*. Phone B sees two profiles (Joe and sample Thabo).
 4. Phone B → *Swap numbers* on Phone A's profile. Both phones get each other's number.
 5. Phone B → *My posts* → the post → *Rate someone* → 5 stars. Phone A is told.
@@ -92,11 +101,11 @@ MediDrop or Greens address back in Meta's webhook.
 ```
 npm install
 npm test          # unit tests: matching, credits, leads, limits
-npm run simulate  # full 3-phone demo on a fake WhatsApp, 40+ checks
+npm run simulate  # full 4-phone demo on a fake WhatsApp, 50 checks
 npm start
 ```
 
 ## Not in the demo (v1)
-Database (everything is in memory, so a restart clears it) · WhatsApp templates for leads
-outside 24 hours · provider ID checks and verified badges · photos on posts ·
+Photos on listings (needs media download and re-upload) · Database (everything is in memory, so a restart clears it) · WhatsApp templates for leads
+outside 24 hours · provider ID checks and verified badges ·
 Ndebele/Shona · admin dashboard.

@@ -15,7 +15,7 @@ export const CATEGORIES: Category[] = [
   { key: "electrical", name: "Electrical & solar", example: "Install a solar system / fix wiring", people: "electricians" },
   { key: "building", name: "Building & painting", example: "Paint a 3-room house / build a wall", people: "builders" },
   { key: "beauty", name: "Hair & beauty", example: "Braids at home / nails for a wedding", people: "hair and beauty pros" },
-  { key: "carparts", name: "Car parts", example: "Toyota Corolla 2008 side mirror", people: "parts sellers" },
+  { key: "cars", name: "Cars & car parts", example: "Toyota Vitz under $3,000 / Corolla side mirror", people: "car and parts sellers" },
   { key: "phones", name: "Phones & electronics", example: "Samsung A15 screen / used laptop", people: "sellers" },
   { key: "clothes", name: "Clothes & shoes", example: "School uniforms size 10 / men's boots", people: "sellers" },
   { key: "other", name: "Something else", example: "Tell us what you need in a few words", people: "people" },
@@ -44,7 +44,7 @@ export interface Bundle {
   cents: number;
 }
 
-// Placeholder prices to test with real providers. 1 credit = 1 contact shared.
+// Placeholder prices to test. 1 credit = 1 number swap, paid by each side.
 export const BUNDLES: Bundle[] = [
   { key: "b2", credits: 2, cents: 100 },
   { key: "b5", credits: 5, cents: 200 },
@@ -90,7 +90,7 @@ export const SAMPLE_PROVIDERS: SampleProvider[] = [
   { phone: "263000000004", name: "Sipho N.", category: "mechanic", area: "north", coversAll: false, text: "Toyota and Honda specialist. Diagnostics and engine work.", price: null, ratingSum: 26, ratingCount: 6, jobs: 7 },
   { phone: "263000000005", name: "Brian Plumbing", category: "plumbing", area: "south", coversAll: true, text: "Geysers, leaks, blocked drains. Same-day call-outs.", price: "From $10", ratingSum: 62, ratingCount: 14, jobs: 19 },
   { phone: "263000000006", name: "Lindiwe Solar", category: "electrical", area: "north", coversAll: true, text: "Solar installs, inverters and house wiring.", price: null, ratingSum: 47, ratingCount: 10, jobs: 12 },
-  { phone: "263000000007", name: "Mpilo Spares", category: "carparts", area: "cbd", coversAll: true, text: "New and used parts for Toyota, Honda and Nissan.", price: null, ratingSum: 70, ratingCount: 16, jobs: 25 },
+  { phone: "263000000007", name: "Mpilo Spares", category: "cars", area: "cbd", coversAll: true, text: "New and used parts for Toyota, Honda and Nissan.", price: null, ratingSum: 70, ratingCount: 16, jobs: 25 },
   { phone: "263000000008", name: "Kuda Phones", category: "phones", area: "cbd", coversAll: true, text: "Screens, batteries and charging ports. Used phones for sale.", price: "Screens from $25", ratingSum: 52, ratingCount: 12, jobs: 30 },
 ];
 
