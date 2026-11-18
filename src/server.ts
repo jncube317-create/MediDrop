@@ -144,6 +144,7 @@ app
     console.log(`Payments: ${paynowConfigured ? "Paynow TEST MODE" : "SIMULATED (Paynow keys not set)"}`);
     if (!env.WA_APP_SECRET) console.warn("⚠️ WA_APP_SECRET not set: webhook signatures are NOT being checked. Add it before go-live.");
     if (!env.PUBLIC_URL) console.warn("⚠️ No public URL yet: generate a domain in Railway → Settings → Networking.");
+    else console.log(`Pictures served from ${env.PUBLIC_URL}/img/g01.jpg`);
   })
   .catch((err) => {
     console.error(err);

@@ -384,6 +384,16 @@ async function sendProductChoices(to: string, products: Product[], body: string)
   });
   if (cards.length === shown.length && cards.length >= 2) {
     if (await wa.sendCarousel(to, body, cards)) return;
+    console.warn("[WA] carousel refused; sending plain photos + list instead");
+  }
+  // Fallback: one photo per product (most reliable message type), then a list to tap.
+  if (cards.length === shown.length) {
+    for (const p of shown) {
+      const imageUrl = productImageUrl(env.PUBLIC_URL, p.id);
+      if (imageUrl) await wa.sendImageLink(to, imageUrl, `${p.name} · ${p.inStock ? formatUsd(p.priceCents) : "Out of stock"}`);
+    }
+  } else {
+    console.warn(`[IMG] No public URL, so no pictures. PUBLIC_URL="${env.PUBLIC_URL}"`);
   }
   const rows = shown.map((p) => ({
     id: `add:${p.id}`,
