@@ -1,3 +1,4 @@
+import { runNumberSetup } from "./setup.js";
 import Fastify from "fastify";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { env, paynowConfigured } from "./env";
@@ -150,6 +151,7 @@ app
     if (!env.PUBLIC_URL) console.warn("⚠️ No public URL yet: generate a domain in Railway → Settings → Networking (needed for Paynow).");
     console.log(`Sample listings and ads: ${env.SAMPLE_PROVIDERS ? "ON (demo)" : "OFF"}`);
     console.log(`Analytics: ${env.POSTHOG_KEY ? `PostHog (${env.POSTHOG_HOST})` : "off (no POSTHOG_KEY)"}`);
+    void runNumberSetup().catch((err) => console.error("[SETUP] error", err));
   })
   .catch((err) => {
     console.error(err);
