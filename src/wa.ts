@@ -114,6 +114,7 @@ export async function sendCarousel(to: string, body: string, cards: CarouselCard
       action: {
         cards: cards.map((c, i) => ({
           card_index: i,
+          type: "cta_url", // Meta's carousel examples set this on every card, quick-reply cards included
           header: { type: "image", image: { link: c.imageUrl } },
           body: { text: c.text },
           action: {

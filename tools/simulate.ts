@@ -53,7 +53,13 @@ const graph = createServer((req, res) => {
         body = `${i.body.text}  [list: ${i.action.button}]`;
         for (const s of i.action.sections) options.push(...s.rows.map((r: any) => `${r.id} "${r.title}"${r.description ? ` – ${r.description}` : ""}`));
       }
+      if (i?.type === "carousel" && process.env.SIM_REFUSE_CAROUSEL === "1") {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end('{"error":{"message":"(#131009) Parameter value is not valid"}}');
+        return;
+      }
       if (i?.type === "carousel") {
+        if (i.action.cards.some((c: any) => c.type !== "cta_url")) throw new Error("card type missing");
         body = `${i.body.text}  [carousel]`;
         for (const c of i.action.cards) options.push(`${c.action.buttons[0].quick_reply.id} · ${c.body.text.replace(/\n/g, " · ")} · ${c.header.image.link.split("/").pop()}`);
       }

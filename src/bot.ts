@@ -857,7 +857,20 @@ async function showItemCards(u: User, need: Need): Promise<void> {
   const intro = `${found.length} ${found.length === 1 ? "match" : "matches"} for "${fit(need.text, 50)}", best matches first. Swipe to compare 👉`;
   let sent = false;
   if (cards.length >= 2) sent = await wa.sendCarousel(u.phone, intro, cards);
-  else if (cards[0]) sent = await wa.sendButtons(u.phone, cards[0].text, cards[0].buttons, { imageUrl: cards[0].imageUrl });
+  if (!sent) {
+    // Backup: one picture card per listing (works everywhere). Max 5 to keep the chat tidy.
+    if (cards.length >= 2) {
+      console.warn("[WA] carousel refused, sending single picture cards instead");
+      await wa.sendText(u.phone, intro.replace(" Swipe to compare 👉", ""));
+    }
+    sent = true;
+    for (const c of cards.slice(0, 5)) {
+      if (!(await wa.sendButtons(u.phone, c.text, c.buttons, { imageUrl: c.imageUrl }))) {
+        sent = false;
+        break;
+      }
+    }
+  }
   if (!sent) {
     await wa.sendList(
       u.phone,
