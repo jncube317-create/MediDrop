@@ -1,10 +1,10 @@
 // Credit ledger. Append-only: the balance is always the sum of the entries.
 // Every entry has a unique key, so repeating the same action never double-counts.
 //
-// 1 credit = 1 contact shared. When a provider says "Interested" we HOLD a credit.
-// If the customer accepts, the hold is CAPTURED (spent). If not, it's RELEASED (given back).
+// Swapping numbers costs credits on both sides. While waiting for the other side we HOLD
+// the credits. If the swap happens the hold is CAPTURED (spent); if not it's RELEASED (given back).
 
-export type EntryKind = "welcome" | "purchase" | "hold" | "release" | "capture" | "grant";
+export type EntryKind = "welcome" | "purchase" | "hold" | "release" | "capture" | "grant" | "spend";
 
 export interface Entry {
   phone: string;
@@ -47,31 +47,44 @@ export class Ledger {
 
   /** Admin or demo top-up. */
   grant(phone: string, credits: number, key: string): boolean {
+    if (credits <= 0) throw new Error("grant must add credits");
     return this.add(phone, credits, "grant", `grant:${key}`);
   }
 
-  isHeld(leadId: string): boolean {
-    return this.keys.has(`hold:${leadId}`) && !this.keys.has(`release:${leadId}`) && !this.keys.has(`capture:${leadId}`);
+  /** Straight spend (e.g. a sponsored-ad tap). False if the balance is too low or already spent. */
+  spend(phone: string, amount: number, key: string): boolean {
+    if (amount <= 0) throw new Error("spend must be positive");
+    if (this.keys.has(`spend:${key}`) || this.balance(phone) < amount) return false;
+    return this.add(phone, -amount, "spend", `spend:${key}`);
   }
 
-  /** Reserves 1 credit for a lead. False if the balance is too low (or it's already held). */
-  hold(phone: string, leadId: string): boolean {
-    if (this.keys.has(`hold:${leadId}`)) return false;
-    if (this.balance(phone) < 1) return false;
-    return this.add(phone, -1, "hold", `hold:${leadId}`);
+  hasSpent(key: string): boolean {
+    return this.keys.has(`spend:${key}`);
   }
 
-  /** The customer accepted: the held credit is spent. */
-  capture(leadId: string): boolean {
-    const hold = this.entries.find((e) => e.key === `hold:${leadId}`);
-    if (!hold || !this.isHeld(leadId)) return false;
-    return this.add(hold.phone, 0, "capture", `capture:${leadId}`);
+  isHeld(key: string): boolean {
+    return this.keys.has(`hold:${key}`) && !this.keys.has(`release:${key}`) && !this.keys.has(`capture:${key}`);
   }
 
-  /** The customer declined or the lead expired: the credit goes back. */
-  release(leadId: string): boolean {
-    const hold = this.entries.find((e) => e.key === `hold:${leadId}`);
-    if (!hold || !this.isHeld(leadId)) return false;
-    return this.add(hold.phone, 1, "release", `release:${leadId}`);
+  /** Reserves credits. False if the balance is too low or this key was already held. */
+  hold(phone: string, key: string, amount = 1): boolean {
+    if (amount <= 0) throw new Error("hold must be positive");
+    if (this.keys.has(`hold:${key}`)) return false;
+    if (this.balance(phone) < amount) return false;
+    return this.add(phone, -amount, "hold", `hold:${key}`);
+  }
+
+  /** The swap happened: the held credits are spent. */
+  capture(key: string): boolean {
+    const hold = this.entries.find((e) => e.key === `hold:${key}`);
+    if (!hold || !this.isHeld(key)) return false;
+    return this.add(hold.phone, 0, "capture", `capture:${key}`);
+  }
+
+  /** Declined, expired or closed: the held credits come back. */
+  release(key: string): boolean {
+    const hold = this.entries.find((e) => e.key === `hold:${key}`);
+    if (!hold || !this.isHeld(key)) return false;
+    return this.add(hold.phone, -hold.delta, "release", `release:${key}`);
   }
 }

@@ -1,4 +1,6 @@
-// A lead = one need sent to one provider. Only these moves are allowed.
+// A lead = one buyer and one seller who might swap numbers. Only these moves are allowed.
+// From a post:  OFFERED (sent to provider) → INTERESTED (provider quoted) → CONNECTED (buyer accepted)
+// From a card:  OFFERED (buyer tapped "I'm interested") → INTERESTED → CONNECTED (seller accepted)
 //
 // OFFERED ──Interested──► INTERESTED ──customer accepts──► CONNECTED
 //    │                         │
@@ -9,10 +11,13 @@ export type LeadStatus = "OFFERED" | "INTERESTED" | "CONNECTED" | "PASSED" | "DE
 
 export interface Lead {
   id: string;
-  needId: string;
-  offerId: string;
-  provider: string; // phone
-  customer: string; // phone
+  needId: string | null; // null when a buyer tapped a card without a post (e.g. from an alert)
+  offerId: string; // the listing
+  provider: string; // seller / provider phone
+  customer: string; // buyer phone
+  origin: "need" | "card"; // need = we sent the post to the provider; card = the buyer tapped a listing
+  cost: number; // credits each side uses on a swap
+  quote: string | null;
   status: LeadStatus;
   createdAt: number;
   updatedAt: number;

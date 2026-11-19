@@ -1,111 +1,103 @@
 # Scoutly – WhatsApp demo
 
-Scoutly links people who **need** something with people who **offer** it:
-carpenters, mechanics, plumbers, hairdressers and anyone selling things.
+Scoutly links people who are **looking for** something with people who **sell or offer** it:
+cars, fridges, doors, clothes, carpenters, painters, mechanics, venues and more.
 Everything happens on one WhatsApp number. Nobody downloads an app.
 
-## How it works
-1. **Someone posts what they need, with a budget.** Tap *I'm looking for…*, or just type it, e.g. "barber in town, $5"
-   or "Toyota Vitz under $3,000". The budget makes every lead a qualified lead.
-2. **Scoutly sends it to matching providers** in the same category, nearest first.
-   Providers who cover all of Bulawayo get jobs from every area.
-3. **A provider or seller taps *Interested*.** They see the budget first. The customer sees their profile: rating, jobs done, asking price, description.
-4. **The customer chooses.** *Swap numbers* sends each of them the other's number and a chat link.
-   *No thanks* keeps the customer's number private. *Report* flags the provider.
-5. **After the job**, the customer rates the provider in *My posts*. Ratings show on future leads.
+> *What are the chances that someone is looking to buy what you're selling today?*
+> Scoutly sends them straight to you.
 
-The customer's number is never shared until they say yes.
+## The experience
 
-Sellers list once instead of posting in WhatsApp and Facebook groups and hoping:
-every buyer who later posts in their category is sent to them.
+**Sign-up (under a minute):** agree to the rules → first name → town → 3 free credits.
 
-**No liability:** people agree at sign-up, and are reminded on every swap, that
-"Scoutly only connects you. We aren't part of any deal and aren't responsible for it."
-(Have a local lawyer check the wording before launch.)
+**Looking for an item** (cars, appliances, doors, clothes, phones, houses…):
+1. Type it ("car under $9,000") or tap *Find something* → item → category.
+2. Budget (or *Not sure yet*) → when (today, this week, **pick a date & time**, flexible) → in your town or anywhere in Zimbabwe.
+3. Matches come back as **swipeable picture cards**: new and pre-loved side by side, best match then cheapest first,
+   each with photo, price, condition, seller level, stars and ✅ verified badge.
+   The last card can be a **Sponsored** card (e.g. car insurance for a car search).
+4. *I'm interested* → the seller sees the buyer's budget and taps *Accept* → both get each other's number.
+5. *Found what you needed?* → *Yes* closes the post so nobody else gets it.
+6. No match yet? Opt in to an **alert** and get the card the moment someone lists one.
 
-## How it makes money: credits, paid by both sides
-- 1 credit = 1 number swap. **Both** the customer and the provider use 1 credit when they swap numbers.
-- When a provider taps *Interested*, 1 credit is **held**. Swapped → spent. Declined, expired or post closed → given back.
-- If either side has no credits, they're asked to buy some, and the lead or swap continues by itself after payment.
-- Everyone gets **3 free credits** on sign-up. Bundles (placeholder prices in `src/data.ts`):
+**Looking for a service** (painter, mechanic, venue, printing, moving…):
+the post goes to matching providers in your town, they **send quotes**, and you get a
+**compare list, cheapest first**, before choosing who to swap numbers with.
 
-| Bundle | Price | Per swap |
-|---|---|---|
-| 2 credits | $1.00 | $0.50 |
-| 5 credits | $2.00 | $0.40 |
-| 15 credits | $5.00 | $0.33 |
+**Selling:** *Sell or offer* → item or service → name, description, **new / pre-loved: good / pre-loved: used**,
+price, **up to 3 photos**, your town or all of Zimbabwe. Buyers who already posted (with alerts on) get it instantly.
+Listing score tells sellers what to improve. *Mark as sold* in *My posts*.
 
-- Credits are bought with EcoCash through Paynow and added **only after the server confirms payment**.
-  With no Paynow keys, payments are simulated and confirm after ~6 seconds.
+**Swapping numbers costs credits on both sides:** 1 credit for most things, 2 for venues, 3 for cars and houses.
+Credits are held while waiting and come back if the swap doesn't happen.
 
-## Rules built in
-- Up to 5 providers get each post. At 3 contacts the post closes itself.
-- Posts stay open 7 days. A provider who joins later still gets open posts in their category.
-- Leads close after 48 hours without a reply, and held credits come back.
-- You never get a lead for your own post. Max 3 active listings per person.
-- 3 reports pause a listing automatically. The admin phone is told about every report.
-- Unfinished posts are cleared after 30 minutes. Anything unexpected → "Sorry, I didn't get that" plus the last options.
+**Advertising:** anyone can create an ad (*📣 Advertise*): category to target, one line, photo, town or nationwide.
+The admin approves or rejects it. Live ads show as the last card in matching searches and cost
+**1 credit per tap** (each person's first tap only).
 
-## Categories and areas
-Carpentry & furniture · Mechanic & car repair · Plumbing · Electrical & solar · Building & painting ·
-Hair & beauty · Cars & car parts · Phones & electronics · Clothes & shoes · Something else.
+**Rules:** consent includes "no illegal goods or services" and "Scoutly only connects people, we aren't part
+of any deal". The no-liability line is repeated on every swap. Posts with banned words (drugs, weapons, stolen,
+fake documents, counterfeit, ivory…) are refused and the admin is told. 3 reports pause a listing. Type **TERMS**.
 
-Areas: City centre, Northern, Eastern, Southern and Western suburbs, Outside Bulawayo.
-Change both in `src/data.ts`.
+**Words that work anywhere** (any capitals): MENU, HI, HELP, TERMS, CREDITS, STOP (alerts off).
 
-## Demo with one phone
-`SAMPLE_PROVIDERS=true` loads 8 fictional providers (e.g. *Thabo M.*, carpenter, ⭐ 4.7).
-They reply *Interested* by themselves after a few seconds and are marked
-"Sample provider for the demo". Their numbers start with 26300, so they're never real and never messaged.
-**Set `SAMPLE_PROVIDERS=false` before real people use it.**
+## Admin (from `ADMIN_PHONE`, or `STAFF_PHONE` on the Greens service)
+| Command | What it does |
+|---|---|
+| `STATS` | People, posts, top searches, swaps, ads, credits sold |
+| `LOOKUP N-1001` | A post, listing (O-501) or lead (L3) with both sides' names and numbers |
+| `GRANT 0771234567 5` | Give credits (founding-seller packs paid in cash, refunds) |
+| `VERIFY 0771234567` | ✅ badge for a seller you've checked |
+| `ADS` | Ads waiting for approval, with Approve/Reject buttons |
 
-For the full demo, use 2–3 phones: one customer, one provider, and optionally the admin.
+Approve/Reject buttons also arrive by themselves when an ad is submitted.
 
-**Demo script**
-1. Phone A (provider): *hi* → agree → name → area → *I offer or sell…* → Carpentry → describe → *All of Bulawayo* → Skip → *List me*.
-2. Phone B (customer): *hi* → agree → name → same area → type *my wardrobe door is broken* → Carpentry → *This week* → type *$40* → *Post it*.
-3. Phone A gets the lead → *Interested*. Phone B sees two profiles (Joe and sample Thabo).
-4. Phone B → *Swap numbers* on Phone A's profile. Both phones get each other's number.
-5. Phone B → *My posts* → the post → *Rate someone* → 5 stars. Phone A is told.
-6. Phone A → *My credits* → 5 credits → pay. Balance goes up after payment.
-7. Admin phone types **STATS**.
+## Seller levels
+🆕 New → 🥉 Bronze (1+ swap) → 🥈 Silver (5+ swaps, ⭐4.0+) → 🥇 Gold (20+ swaps, ⭐4.5+). Stars only, from real swaps.
 
-## Before the demo
-- Every demo phone must be added as a test recipient in Meta (API Setup → To) and must message the bot first.
-  The test number can only send free-form messages within 24 hours of the person's last message.
-- Leads to providers who haven't messaged in 24 hours need approved **templates** in v1.
-  The demo doesn't use templates.
+## Analytics (PostHog)
+Set `POSTHOG_KEY` and events go to PostHog EU: `signed_up`, `post_created`, `post_no_match`, `cards_shown`,
+`interest_sent`, `leads_sent`, `quote_sent`, `numbers_swapped`, `post_found`, `alert_opt_in`, `alert_sent`,
+`listing_created`, `listing_sold`, `out_of_credits`, `credits_bought`, `sponsored_tap`, `ad_created`, `rated`, `reported`, `post_refused`.
+People are a scrambled ID: no phone numbers, names or message text go to PostHog. Phone numbers stay in the bot
+(use `LOOKUP`). No key = no tracking.
 
-## Railway: reuse the Greens service (quickest)
-Scoutly reads the same variables as Greens, so nothing new is needed:
-1. Open the **Greens** service → **Settings → Source → Branch** → change `greens` to `scoutly`.
-2. Wait for the deploy, then open `https://<greens domain>/health` → `{"ok":true,"app":"Scoutly",...}`.
+## Demo data
+`SAMPLE_PROVIDERS=true` loads sample listings with real photos (BMW 745i $5,500, Nissan NP300 $8,500,
+Defy combi fridge $520 new, woven mules $12, two steel doors $480 / $420 new), 10 sample service providers
+(painters, mechanics, venue, printing, movers…) and 2 sample ads (Ace Paint Centre, Kudu Car Cover).
+Prices are realistic samples from Nov 2026 research, not real offers. Sample sellers reply by themselves,
+their numbers start with 26300 (never real) and they're marked as samples.
+**Set `SAMPLE_PROVIDERS=false` before real people use it.** Get permission before showing other people's photos publicly.
 
-The domain, verify token and Meta webhook stay the same. `STAFF_PHONE` becomes the admin phone
-(reports + STATS). Greens' other variables are ignored. To go back to Greens, set the branch back to `greens`.
+## Demo script (2 phones + admin)
+1. Phone A: *hi* → agree → name → Bulawayo → type **car under $9,000** → An item → Cars & bakkies → *9000* → This week → In Bulawayo → Post it.
+   Swipe the BMW, the Nissan and the sponsored insurance card. Tap *I'm interested* on the Nissan → numbers swapped → *Yes, close my post*.
+2. Phone A: type **fridge** → item → Fridges & appliances → *350* → Flexible → Post → *Alert me*.
+3. Phone B: *Sell or offer* → Sell an item → Fridges → name, description, Pre-loved: good, *300*, send a photo → Done → List it.
+   Phone A gets the new fridge card instantly → *I'm interested* → Phone B *Accept* → numbers swapped.
+4. Phone B: list a painting service. Phone A: post **painter for 6 rooms, Dulux, fix and supply** → service →
+   Building & painting → Pick a date → *Sat 20 Dec, 9am* → Post. See the paint-shop ad, Sipho's quote, then Phone B's quote, and the compare list.
+5. Phone B: *📣 Advertise* → create an ad → admin approves it.
+6. Admin: `STATS`, `LOOKUP N-1003`.
 
-## Railway: run it as its own service
-1. In your Railway project: **+ New → GitHub Repo → MediDrop**.
-2. Open the new service → **Settings → Source → Branch** → `scoutly`.
-3. **Variables → Raw Editor**: paste from `.env.example` and fill in the values
-   (`WA_TOKEN`, `WA_PHONE_NUMBER_ID`, `WA_APP_SECRET` are the same as MediDrop's).
-4. **Settings → Networking → Generate Domain**.
-5. In Meta → WhatsApp → Configuration → Webhook: callback URL `https://<domain>/webhook`,
-   verify token `scoutly-demo-2026` → **Verify and save**. Subscribe to **messages**.
-6. Open `https://<domain>/health` → `{"ok":true,...}`.
+## Railway: reuse the Greens service
+Scoutly reads the same variables as Greens: open the Greens service → **Settings → Source → Branch** → `scoutly`.
+Check `https://<domain>/health` shows `"app":"Scoutly"`. Optional extra variables: `POSTHOG_KEY`, `SAMPLE_PROVIDERS`.
+Paynow keys on that service are **live**: credit purchases take real money.
 
-One WhatsApp number can point to one webhook at a time. To switch back, put the
-MediDrop or Greens address back in Meta's webhook.
+Before the demo, every demo phone must message the bot first (24-hour window), and be a test recipient if you're on the test number.
 
 ## Run locally
 ```
 npm install
-npm test          # unit tests: matching, credits, leads, limits
-npm run simulate  # full 4-phone demo on a fake WhatsApp, 50 checks
+npm test          # 30 unit tests: matching, credits, leads, data, money
+npm run simulate  # full 4-phone run on a fake WhatsApp, 60 checks
 npm start
 ```
 
-## Not in the demo (v1)
-Photos on listings (needs media download and re-upload) · Database (everything is in memory, so a restart clears it) · WhatsApp templates for leads
-outside 24 hours · provider ID checks and verified badges ·
-Ndebele/Shona · admin dashboard.
+## Not in the demo yet (v1)
+Database (everything is in memory: a restart clears posts and photos) · photo storage that survives redeploys ·
+WhatsApp templates for leads and alerts outside 24 hours · Haiku 5.5 to read free-text posts and Ndebele/Shona ·
+monthly business plans and paid boosts · fast-reply streaks, leagues and weekly reports · referrals.

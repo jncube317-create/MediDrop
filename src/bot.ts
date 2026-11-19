@@ -1,79 +1,102 @@
 // Scoutly conversation logic.
-// People post what they're LOOKING FOR (a need) or what they OFFER / SELL (a listing).
-// We send each need to matching providers as a lead. A provider taps Interested,
-// the customer sees their profile and chooses whether to swap numbers.
-// The provider uses 1 credit only when numbers are actually swapped.
+//
+// Buyers post what they're looking for (a "need"): budget, when, where.
+//   • Items (cars, fridges, doors, shoes…): matching listings come back at once as swipeable picture
+//     cards, new and pre-loved side by side, cheapest first. "I'm interested" asks the seller.
+//   • Services (painters, mechanics…): the post goes to matching providers, they reply with a quote,
+//     and the buyer compares quotes before swapping numbers.
+// Sellers list items or services once, with photos, and buyers come to them.
+// Numbers are swapped only when both sides say yes. Each side uses credits for a swap.
+// Sponsored cards (self-serve, admin-approved) show last in results and are paid per tap.
 //
 // State is kept in memory (fine for the demo; v1 stores it in a database).
 
 import { env } from "./env";
 import * as wa from "./wa";
 import {
-  AREAS,
+  AD_TAP_COST,
   BUNDLES,
-  CATEGORIES,
+  CARDS_PER_RESULT,
+  CITIES,
+  CONDITION_LABEL,
   LEADS_PER_NEED,
-  MAX_ACTIVE_OFFERS,
+  MAX_ACTIVE_LISTINGS,
   MAX_CONNECTIONS_PER_NEED,
-  SAMPLE_PROVIDERS,
+  SAMPLE_ADS,
+  SAMPLE_LISTINGS,
+  SAMPLE_SELLERS,
   WELCOME_CREDITS,
   WHEN_LABEL,
+  bannedWord,
+  categoriesOf,
   fit,
-  getArea,
   getBundle,
   getCategory,
-  type When,
+  getCity,
+  parseDollars,
+  type Condition,
+  type Kind,
+  type WhenKey,
 } from "./data";
 import { Ledger } from "./credits";
-import { averageRating, pickMatches, score, type OfferLike } from "./match";
+import { LEVEL_ICON, averageRating, eligible, level, profileScore, quoteCents, rankItems, rankProviders } from "./match";
 import { chatLink, isOpen, isStale, moveLead, prettyPhone, type Lead } from "./leads";
 import { formatUsd } from "./money";
 import { checkPayment, startPayment } from "./pay";
 import { formatLocalNumber, networkMatches, normalizeZwMobile, toLocalNumber } from "./paystatus";
+import { track } from "./analytics";
+import { demoPhoto, savePhoto } from "./media";
+import type { CarouselCard } from "./limits";
 
 export type Incoming =
   | { from: string; kind: "text"; text: string }
   | { from: string; kind: "reply"; id: string }
+  | { from: string; kind: "image"; mediaId: string }
   | { from: string; kind: "other" };
 
+type Mode = "find" | "sell" | "ad";
+
 type Step =
-  | "ASK_CONSENT"
-  | "ASK_NAME"
-  | "ASK_AREA"
+  | "ASK_CONSENT" | "ASK_NAME" | "ASK_CITY"
   | "MENU"
-  | "NEED_CATEGORY"
-  | "NEED_TEXT"
-  | "NEED_WHEN"
-  | "NEED_BUDGET"
-  | "NEED_CONFIRM"
-  | "OFFER_CATEGORY"
-  | "OFFER_TEXT"
-  | "OFFER_COVER"
-  | "OFFER_PRICE"
-  | "OFFER_CONFIRM"
-  | "BUY_PAYER"
-  | "BUY_OTHER_NUMBER"
-  | "BUY_WAIT";
+  | "CAT_KIND" | "CAT_PICK"
+  | "FIND_TEXT" | "FIND_BUDGET" | "FIND_WHEN" | "FIND_DATE" | "FIND_WHERE" | "FIND_CONFIRM"
+  | "SELL_TITLE" | "SELL_DESC" | "SELL_COND" | "SELL_PRICE" | "SELL_PHOTOS" | "SELL_COVER" | "SELL_CONFIRM"
+  | "QUOTE_TEXT"
+  | "AD_TEXT" | "AD_PHOTO" | "AD_WHERE" | "AD_CONFIRM"
+  | "BUY_PAYER" | "BUY_OTHER_NUMBER" | "BUY_WAIT";
 
 interface Draft {
+  mode?: Mode;
+  kind?: Kind;
   category?: string;
   text?: string;
-  when?: When;
-  budget?: string | null;
-  coversAll?: boolean;
-  price?: string | null;
+  title?: string;
+  budgetText?: string | null;
+  budgetCents?: number | null;
+  when?: WhenKey;
+  whenText?: string | null;
+  anywhere?: boolean;
+  condition?: Condition | null;
+  priceCents?: number | null;
+  priceText?: string | null;
+  photos?: string[];
+  nationwide?: boolean;
   bundle?: string;
 }
 
 interface User {
   phone: string;
   name: string | null;
-  area: string | null;
+  city: string | null;
+  verified: boolean;
   step: Step;
   draft: Draft;
-  changingArea: null | "menu" | "need";
-  pendingLeadId: string | null; // provider lead waiting for a credit top-up
-  pendingConnId: string | null; // customer swap waiting for a credit top-up
+  changingCity: boolean;
+  pendingLeadId: string | null; // provider/seller waiting for a top-up
+  pendingConnId: string | null; // buyer swap waiting for a top-up
+  pendingCard: { listingId: string; needId: string | null } | null; // buyer interest waiting for a top-up
+  quoteLeadId: string | null;
   purchaseId: string | null;
   updatedAt: number;
   reprompt: (() => Promise<unknown>) | null;
@@ -82,22 +105,55 @@ interface User {
 interface Need {
   id: string;
   owner: string;
+  kind: Kind;
   category: string;
-  area: string;
+  city: string;
+  anywhere: boolean;
   text: string;
-  when: When;
-  budget: string | null;
+  budgetText: string | null;
+  budgetCents: number | null;
+  when: WhenKey;
+  whenText: string | null;
+  alert: boolean;
   createdAt: number;
   status: "OPEN" | "CLOSED" | "EXPIRED";
   connections: number;
 }
 
-interface Offer extends OfferLike {
-  name: string;
-  price: string | null;
+interface Listing {
+  id: string;
+  owner: string;
+  kind: Kind;
+  category: string;
+  city: string;
+  nationwide: boolean;
+  title: string;
+  text: string;
+  priceCents: number | null;
+  priceText: string | null;
+  condition: Condition | null;
+  photos: string[];
+  active: boolean;
+  sold: boolean;
+  ratingSum: number;
+  ratingCount: number;
   jobs: number;
   strikes: number;
   sample: boolean;
+  sampleQuote: string | null;
+  createdAt: number;
+}
+
+interface Ad {
+  id: string;
+  owner: string;
+  category: string;
+  city: string | null; // null = anywhere
+  text: string;
+  photo: string | null;
+  status: "PENDING" | "LIVE" | "REJECTED" | "PAUSED";
+  views: number;
+  taps: number;
   createdAt: number;
 }
 
@@ -114,50 +170,53 @@ interface Purchase {
 
 const users = new Map<string, User>();
 const needs = new Map<string, Need>();
-const offers = new Map<string, Offer>();
+const listings = new Map<string, Listing>();
 const leads = new Map<string, Lead>();
+const ads = new Map<string, Ad>();
 const purchases = new Map<string, Purchase>();
 const ledger = new Ledger();
 let needSeq = 1000;
-let offerSeq = 500;
+let listingSeq = 500;
 let leadSeq = 0;
+let adSeq = 10;
 let purchaseSeq = 100;
 
 const DRAFT_TIMEOUT_MS = 30 * 60 * 1000;
 const NEED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PAYMENT_TIMEOUT_MS = 10 * 60 * 1000;
-const DRAFT_STEPS: Step[] = [
-  "NEED_CATEGORY", "NEED_TEXT", "NEED_WHEN", "NEED_BUDGET", "NEED_CONFIRM",
-  "OFFER_CATEGORY", "OFFER_TEXT", "OFFER_COVER", "OFFER_PRICE", "OFFER_CONFIRM",
-  "BUY_PAYER", "BUY_OTHER_NUMBER",
-];
+const NOT_DRAFT: Step[] = ["ASK_CONSENT", "ASK_NAME", "ASK_CITY", "MENU", "BUY_WAIT"];
+const LIABILITY = `⚖️ ${env.APP_NAME} only connects you. We aren't part of any deal and aren't responsible for it.`;
 
-// ---------------------------------------------------------------- sample providers
+// ---------------------------------------------------------------- demo data
+
+function newUser(phone: string): User {
+  return {
+    phone, name: null, city: null, verified: false, step: "ASK_CONSENT", draft: {}, changingCity: false,
+    pendingLeadId: null, pendingConnId: null, pendingCard: null, quoteLeadId: null, purchaseId: null,
+    updatedAt: Date.now(), reprompt: null,
+  };
+}
 
 function seedSamples(): void {
   if (!env.SAMPLE_PROVIDERS) return;
-  for (const p of SAMPLE_PROVIDERS) {
-    const id = `O-${++offerSeq}`;
-    offers.set(id, {
-      id,
-      owner: p.phone,
-      name: p.name,
-      category: p.category,
-      area: p.area,
-      coversAll: p.coversAll,
-      text: p.text,
-      price: p.price,
-      active: true,
-      ratingSum: p.ratingSum,
-      ratingCount: p.ratingCount,
-      jobs: p.jobs,
-      strikes: 0,
-      sample: true,
-      createdAt: Date.now(),
-    });
-    ledger.grant(p.phone, 1000, `sample:${p.phone}`);
+  for (const s of SAMPLE_SELLERS) {
+    users.set(s.phone, { ...newUser(s.phone), name: s.name, city: "byo", verified: s.verified, step: "MENU" });
+    ledger.grant(s.phone, 10_000, `sample:${s.phone}`);
   }
-  console.log(`[DEMO] ${SAMPLE_PROVIDERS.length} sample providers loaded (set SAMPLE_PROVIDERS=false to remove)`);
+  for (const s of SAMPLE_LISTINGS) {
+    const id = `O-${++listingSeq}`;
+    listings.set(id, {
+      id, owner: s.seller, kind: s.kind, category: s.category, city: "byo", nationwide: s.nationwide,
+      title: s.title, text: s.text, priceCents: s.priceCents, priceText: s.priceText, condition: s.condition,
+      photos: s.photo ? [demoPhoto(s.photo)] : [], active: true, sold: false,
+      ratingSum: s.ratingSum, ratingCount: s.ratingCount, jobs: s.jobs, strikes: 0, sample: true, sampleQuote: s.quote, createdAt: Date.now(),
+    });
+  }
+  for (const a of SAMPLE_ADS) {
+    const id = `AD-${++adSeq}`;
+    ads.set(id, { id, owner: a.owner, category: a.category, city: null, text: a.text, photo: demoPhoto(a.photo), status: "LIVE", views: 0, taps: 0, createdAt: Date.now() });
+  }
+  console.log(`[DEMO] ${SAMPLE_LISTINGS.length} sample listings and ${SAMPLE_ADS.length} sample ads loaded (SAMPLE_PROVIDERS=false removes them)`);
 }
 seedSamples();
 
@@ -166,21 +225,25 @@ seedSamples();
 function user(phone: string): { u: User; timedOut: boolean } {
   let u = users.get(phone);
   if (!u) {
-    u = { phone, name: null, area: null, step: "ASK_CONSENT", draft: {}, changingArea: null, pendingLeadId: null, pendingConnId: null, purchaseId: null, updatedAt: Date.now(), reprompt: null };
+    u = newUser(phone);
     users.set(phone, u);
   }
-  const timedOut = DRAFT_STEPS.includes(u.step) && Date.now() - u.updatedAt > DRAFT_TIMEOUT_MS;
+  const timedOut = !NOT_DRAFT.includes(u.step) && Date.now() - u.updatedAt > DRAFT_TIMEOUT_MS;
   u.updatedAt = Date.now();
   return { u, timedOut };
 }
 
 const textOf = (m: Incoming) => (m.kind === "text" ? m.text.trim() : "");
 const replyId = (m: Incoming) => (m.kind === "reply" ? m.id : "");
-const nameOf = (phone: string) => users.get(phone)?.name ?? "A customer";
-const areaName = (key: string) => getArea(key)?.name ?? key;
+const nameOf = (phone: string) => users.get(phone)?.name ?? "Someone";
+const cityName = (key: string | null) => (key ? getCity(key)?.name ?? key : "your town");
 const catName = (key: string) => getCategory(key)?.name ?? key;
+const costOf = (category: string) => getCategory(category)?.swapCost ?? 1;
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const credits = (n: number) => plural(n, "credit");
 const isSample = (phone: string) => phone.startsWith("26300");
+const isAdmin = (phone: string) => Boolean(env.ADMIN_PHONE) && phone === env.ADMIN_PHONE;
+const clean = (t: string, max: number) => t.replace(/\s+/g, " ").trim().slice(0, max);
 
 async function prompt(u: User, fn: () => Promise<unknown>): Promise<void> {
   u.reprompt = fn;
@@ -198,27 +261,67 @@ async function tell(phone: string, body: string): Promise<void> {
   await wa.sendText(phone, body);
 }
 
-function coverage(o: Pick<Offer, "area" | "coversAll">): string {
-  return o.coversAll ? `${areaName(o.area)}, covers all of ${env.CITY}` : areaName(o.area);
+/** 550000 → "$5,500"; 52050 → "$520.50". */
+function dollars(cents: number): string {
+  return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: cents % 100 ? 2 : 0, maximumFractionDigits: 2 })}`;
 }
 
-function ratingLine(o: Offer): string {
-  const stars = o.ratingCount ? `⭐ ${averageRating(o).toFixed(1)} (${plural(o.ratingCount, "review")})` : `⭐ New on ${env.APP_NAME}`;
-  return `${stars} · ${plural(o.jobs, "job")} via ${env.APP_NAME}`;
+function priceLabel(l: Listing): string {
+  if (l.priceCents !== null) return dollars(l.priceCents);
+  return l.priceText ?? "Ask for price";
 }
 
-function activeOffersOf(phone: string): Offer[] {
-  return [...offers.values()].filter((o) => o.owner === phone && o.active);
+function badges(l: Listing): string {
+  const avg = averageRating(l);
+  const lv = level(l.jobs, avg);
+  const stars = l.ratingCount ? `⭐ ${avg.toFixed(1)} (${l.ratingCount})` : "⭐ New";
+  return `${LEVEL_ICON[lv]} ${lv} · ${stars}${users.get(l.owner)?.verified ? " · ✅ Verified" : ""}`;
+}
+
+/** Fits a carousel card: max 160 characters and 2 line breaks. */
+function cardText(l: Listing): string {
+  const cond = l.condition ? (l.condition === "new" ? "New" : "Pre-loved") : catName(l.category);
+  const where = l.nationwide ? "Nationwide" : cityName(l.city);
+  // fit() would squash the line breaks, so each line is shortened on its own.
+  return `${fit(l.title, 40)}\n${fit(`${priceLabel(l)} · ${cond} · ${where}`, 50)}\n${fit(badges(l), 60)}`;
+}
+
+function cardImage(l: Listing): string {
+  return l.photos[0] ?? demoPhoto("no-photo.jpg");
+}
+
+async function anythingElse(to: string, body = "Anything else we can help you with?"): Promise<void> {
+  await wa.sendButtons(to, body, [
+    { id: "menu:find", title: "Find something" },
+    { id: "menu:sell", title: "Sell or offer" },
+    { id: "menu:main", title: "Main menu" },
+  ]);
 }
 
 function leadsFor(needId: string): Lead[] {
   return [...leads.values()].filter((l) => l.needId === needId);
 }
 
+function activeListingsOf(phone: string): Listing[] {
+  return [...listings.values()].filter((l) => l.owner === phone && l.active && !l.sold);
+}
+
+/** Refuses illegal posts and tells the admin. True if refused. */
+async function refusedAsBanned(u: User, text: string): Promise<boolean> {
+  const word = bannedWord(text);
+  if (!word) return false;
+  u.draft = {};
+  u.step = "MENU";
+  track("post_refused", u.phone, { reason: "banned_word" });
+  await wa.sendText(u.phone, `Sorry, we can't post that. ${env.APP_NAME} doesn't allow illegal goods or services. Type TERMS to see the rules.`);
+  if (env.ADMIN_PHONE) await wa.sendText(env.ADMIN_PHONE, `🚫 *Post blocked* (word: "${word}")\nFrom: ${u.name ?? "?"} ${prettyPhone(u.phone)}\n"${fit(text, 200)}"`);
+  return true;
+}
+
 // ---------------------------------------------------------------- entry point
 
 export async function handleIncoming(m: Incoming): Promise<void> {
-  if (env.ADMIN_PHONE && m.from === env.ADMIN_PHONE && /^stats$/i.test(textOf(m))) return sendStats(m.from);
+  if (isAdmin(m.from) && /^(stats|lookup|grant|verify|ads)\b/i.test(textOf(m))) return adminCommand(m.from, textOf(m));
   return conversation(m);
 }
 
@@ -234,63 +337,85 @@ async function conversation(m: Incoming): Promise<void> {
     await wa.sendText(to, "Your unfinished post timed out, so we've cleared it.");
   }
 
-  // First contact: consent → name → area.
+  // ---- first contact: consent → name → city
   if (u.step === "ASK_CONSENT") {
     if (id === "consent:yes") {
-      console.log(`[CONSENT] ...${to.slice(-4)} agreed at ${new Date().toISOString()} (text v2, incl. no-liability clause)`);
+      console.log(`[CONSENT] ...${to.slice(-4)} agreed at ${new Date().toISOString()} (text v3: no-liability + no illegal goods)`);
       u.step = "ASK_NAME";
       await wa.sendText(to, "Thank you 🙏 What's your first name?");
       return;
     }
-    if (id === "consent:no") {
-      await wa.sendText(to, `No problem. We need this to connect you with people, so we can't continue without it. Type HI if you change your mind.`);
-      return;
-    }
+    if (id === "consent:no") return void (await wa.sendText(to, "No problem. We need this to connect you with people, so we can't continue without it. Type HI if you change your mind."));
+    if (id === "terms") return showTerms(to);
     return askConsent(to);
   }
   if (u.step === "ASK_NAME") {
     if (!text) return void (await wa.sendText(to, "Please type your first name."));
-    u.name = text.replace(/\s+/g, " ").slice(0, 30);
-    return askArea(u);
+    u.name = clean(text, 30);
+    return askCity(u);
   }
-  if (u.step === "ASK_AREA") {
-    const area = id.startsWith("area:") ? getArea(id.slice(5)) : undefined;
-    if (!area) return didntGetThat(u);
-    const first = u.area === null;
-    u.area = area.key;
-    if (u.changingArea === "need") {
-      u.changingArea = null;
-      return needSummary(u);
+  if (u.step === "ASK_CITY") {
+    const city = id.startsWith("city:") ? getCity(id.slice(5)) : undefined;
+    if (!city) return didntGetThat(u);
+    const first = u.city === null;
+    u.city = city.key;
+    if (u.changingCity && u.draft.mode === "find") {
+      u.changingCity = false;
+      return findSummary(u);
     }
-    u.changingArea = null;
+    u.changingCity = false;
     if (first) {
       ledger.welcome(u.phone, WELCOME_CREDITS);
+      track("signed_up", to, { city: city.key });
       return showMenu(
         u,
-        `Welcome to ${env.APP_NAME}, ${u.name} 👋\n\nPost what you're looking for and we'll send it to people near you who offer it. Selling something or offering a service? List it once and buyers come to you.\n\n🎁 You have ${WELCOME_CREDITS} free credits. 1 credit = 1 number swap.`,
+        `Welcome to ${env.APP_NAME}, ${u.name} 👋\n\nLooking for something? Tell us and we'll show you who's selling it. Selling something or offering a service? List it once and buyers come to you.\n\n🎁 You have ${WELCOME_CREDITS} free credits.`,
       );
     }
-    return showMenu(u, `📍 Area updated to ${area.name}.`);
+    return showMenu(u, `📍 Your town is now ${city.name}.`);
   }
 
-  // Global text commands.
+  // ---- words that work anywhere (any capitals)
   if (/^(menu|hi|hello|hey|start)$/i.test(text)) {
-    if (u.step === "BUY_WAIT") return void (await wa.sendText(to, "We're still waiting for your payment. I'll message you as soon as it goes through."));
-    u.draft = {};
+    if (u.step === "BUY_WAIT") return waitingForPayment(to);
     return showMenu(u, `Hi ${u.name} 👋`);
   }
   if (/^help$/i.test(text)) return showHelp(u);
+  if (/^terms$/i.test(text)) return showTerms(to);
   if (/^credits?$/i.test(text)) return showCredits(u);
+  if (/^stop$/i.test(text)) return stopAlerts(u);
 
-  // Taps on leads and posts work from anywhere: those messages stay in the chat.
+  // ---- photos
+  if (m.kind === "image") {
+    if (u.step === "SELL_PHOTOS") return addListingPhoto(u, m.mediaId);
+    if (u.step === "AD_PHOTO") return addAdPhoto(u, m.mediaId);
+    return void (await wa.sendText(to, "Nice photo! To show it to buyers, list your item: type MENU → Sell or offer."));
+  }
+
+  // ---- taps on cards and leads work from anywhere: those messages stay in the chat
   const [kind, a, b] = id.split(":");
   switch (kind) {
+    case "int":
+      return buyerInterested(u, a ?? "", b && b !== "-" ? b : null);
+    case "sell":
+      return sellerResponds(to, b ?? "", a === "yes");
     case "lead":
-      return providerResponds(to, b ?? "", a === "yes");
+      return providerResponds(u, b ?? "", a === "yes");
     case "conn":
       return customerResponds(to, b ?? "", a === "yes");
+    case "q":
+      return showQuote(to, a ?? "");
     case "report":
       return reportLead(to, a ?? "");
+    case "found":
+      return foundIt(u, b ?? "", a === "yes");
+    case "alert":
+      return setAlert(u, b ?? "", a === "on");
+    case "adtap":
+      return adTapped(u, a ?? "");
+    case "ad":
+      if (a === "ok" || a === "no") return reviewAd(to, b ?? "", a === "ok");
+      break;
     case "ratepick":
       return askRatingFor(u, a ?? "");
     case "rating":
@@ -301,33 +426,35 @@ async function conversation(m: Incoming): Promise<void> {
       return pickWhoToRate(u, a ?? "");
     case "close":
       return closeMyNeed(u, a ?? "");
+    case "sold":
+      return markSold(u, a ?? "");
     case "pause":
     case "resume":
-      return toggleOffer(u, a ?? "", kind === "resume");
+      return toggleListing(u, a ?? "", kind === "resume");
   }
 
-  if (u.step === "BUY_WAIT") {
-    await wa.sendText(to, "We're still waiting for your payment. I'll message you as soon as it goes through.");
-    return;
-  }
+  if (u.step === "BUY_WAIT") return waitingForPayment(to);
 
   if (id.startsWith("buy:")) return startBuy(u, id.slice(4));
+  if (id === "adnew") return askKind(u, "ad");
   if (id.startsWith("menu:")) {
     u.draft = {};
     switch (id) {
       case "menu:main":
         return showMenu(u, "Main menu");
-      case "menu:need":
-        return askCategory(u, "need");
-      case "menu:offer":
-        return startOffer(u);
+      case "menu:find":
+        return askKind(u, "find");
+      case "menu:sell":
+        return startSell(u);
       case "menu:posts":
         return showPosts(u);
       case "menu:credits":
         return showCredits(u);
-      case "menu:area":
-        u.changingArea = "menu";
-        return askArea(u);
+      case "menu:ads":
+        return showAdvertise(u);
+      case "menu:city":
+        u.changingCity = true;
+        return askCity(u);
       case "menu:help":
         return showHelp(u);
     }
@@ -337,81 +464,155 @@ async function conversation(m: Incoming): Promise<void> {
     case "MENU": {
       // Typing straight away = "I'm looking for this".
       if (text.length >= 3) {
-        u.draft = { text: text.slice(0, 300) };
-        return askCategory(u, "need");
+        if (await refusedAsBanned(u, text)) return;
+        u.draft = { text: clean(text, 300) };
+        return askKind(u, "find");
       }
       return didntGetThat(u);
     }
 
-    case "NEED_CATEGORY":
-    case "OFFER_CATEGORY": {
+    case "CAT_KIND": {
+      if (id !== "kind:item" && id !== "kind:service") return didntGetThat(u);
+      u.draft.kind = id === "kind:item" ? "item" : "service";
+      return askCategory(u);
+    }
+
+    case "CAT_PICK": {
       const cat = id.startsWith("cat:") ? getCategory(id.slice(4)) : undefined;
       if (!cat) return didntGetThat(u);
       u.draft.category = cat.key;
-      if (u.step === "OFFER_CATEGORY") return askOfferText(u);
-      if (u.draft.text) return askWhen(u);
-      return askNeedText(u);
+      if (u.draft.mode === "sell") return cat.kind === "item" ? askSellTitle(u) : askSellDesc(u);
+      if (u.draft.mode === "ad") return askAdText(u);
+      return u.draft.text ? askBudget(u) : askFindText(u);
     }
 
-    case "NEED_TEXT":
-    case "OFFER_TEXT": {
-      if (text.length < 4) {
-        await wa.sendText(to, "Please describe it in a few words.");
-        return;
-      }
-      u.draft.text = text.replace(/\s+/g, " ").slice(0, 300);
-      return u.step === "NEED_TEXT" ? askWhen(u) : askCover(u);
-    }
-
-    case "NEED_WHEN": {
-      const when = id.startsWith("when:") ? (id.slice(5) as When) : null;
-      if (!when || !(when in WHEN_LABEL)) return didntGetThat(u);
-      u.draft.when = when;
+    // ---- find
+    case "FIND_TEXT": {
+      if (text.length < 3) return void (await wa.sendText(to, "Please describe it in a few words."));
+      if (await refusedAsBanned(u, text)) return;
+      u.draft.text = clean(text, 300);
       return askBudget(u);
     }
-
-    case "NEED_BUDGET": {
-      if (id === "budget:skip") u.draft.budget = null;
-      else if (text) u.draft.budget = text.replace(/\s+/g, " ").slice(0, 40);
-      else return didntGetThat(u);
-      return needSummary(u);
+    case "FIND_BUDGET": {
+      if (id === "budget:skip") {
+        u.draft.budgetText = null;
+        u.draft.budgetCents = null;
+      } else if (text) {
+        u.draft.budgetText = clean(text, 40);
+        u.draft.budgetCents = parseDollars(text);
+      } else return didntGetThat(u);
+      return askWhen(u);
     }
-
-    case "NEED_CONFIRM": {
+    case "FIND_WHEN": {
+      const when = id.startsWith("when:") ? (id.slice(5) as WhenKey) : null;
+      if (!when || !(when in WHEN_LABEL)) return didntGetThat(u);
+      u.draft.when = when;
+      u.draft.whenText = null;
+      if (when === "date") {
+        u.step = "FIND_DATE";
+        return prompt(u, () => wa.sendText(to, "Type the date and time, e.g. _Sat 20 Dec, 2pm_"));
+      }
+      return askWhere(u);
+    }
+    case "FIND_DATE": {
+      if (!text) return didntGetThat(u);
+      u.draft.whenText = clean(text, 40);
+      return askWhere(u);
+    }
+    case "FIND_WHERE": {
+      if (id !== "where:city" && id !== "where:any") return didntGetThat(u);
+      u.draft.anywhere = id === "where:any";
+      return findSummary(u);
+    }
+    case "FIND_CONFIRM": {
       if (id === "need:post") return createNeed(u);
-      if (id === "need:cancel") {
-        u.draft = {};
-        return showMenu(u, "Okay, nothing was posted.");
-      }
-      if (id === "area:change") {
-        u.changingArea = "need";
-        return askArea(u);
-      }
+      if (id === "need:cancel") return showMenu(u, "Okay, nothing was posted.");
       return didntGetThat(u);
     }
 
-    case "OFFER_COVER": {
-      if (id !== "cover:area" && id !== "cover:all") return didntGetThat(u);
-      u.draft.coversAll = id === "cover:all";
+    // ---- sell
+    case "SELL_TITLE": {
+      if (text.length < 3) return void (await wa.sendText(to, "Please name it in a few words."));
+      if (await refusedAsBanned(u, text)) return;
+      u.draft.title = clean(text, 60);
+      return askSellDesc(u);
+    }
+    case "SELL_DESC": {
+      if (id === "desc:skip" && u.draft.kind === "item") u.draft.text = "";
+      else if (text.length >= 4) {
+        if (await refusedAsBanned(u, text)) return;
+        u.draft.text = clean(text, 300);
+      } else return void (await wa.sendText(to, "Please describe it in a sentence or two."));
+      return u.draft.kind === "item" ? askCondition(u) : askPrice(u);
+    }
+    case "SELL_COND": {
+      const cond = id.startsWith("cond:") ? (id.slice(5) as Condition) : null;
+      if (!cond || !(cond in CONDITION_LABEL)) return didntGetThat(u);
+      u.draft.condition = cond;
       return askPrice(u);
     }
-
-    case "OFFER_PRICE": {
-      if (id === "price:skip") u.draft.price = null;
-      else if (text) u.draft.price = text.replace(/\s+/g, " ").slice(0, 40);
-      else return didntGetThat(u);
-      return offerSummary(u);
+    case "SELL_PRICE": {
+      if (u.draft.kind === "item") {
+        const cents = parseDollars(text);
+        if (cents === null) return void (await wa.sendText(to, "Type the price in US dollars, e.g. *520*."));
+        u.draft.priceCents = cents;
+        u.draft.priceText = null;
+      } else if (id === "price:skip") {
+        u.draft.priceText = null;
+      } else if (text) {
+        u.draft.priceText = clean(text, 40);
+      } else return didntGetThat(u);
+      return askPhotos(u);
     }
-
-    case "OFFER_CONFIRM": {
-      if (id === "offer:post") return createOffer(u);
-      if (id === "offer:cancel") {
-        u.draft = {};
-        return showMenu(u, "Okay, nothing was listed.");
-      }
+    case "SELL_PHOTOS": {
+      if (id === "photos:done" || id === "photos:skip") return askCover(u);
+      return didntGetThat(u);
+    }
+    case "SELL_COVER": {
+      if (id !== "cover:city" && id !== "cover:all") return didntGetThat(u);
+      u.draft.nationwide = id === "cover:all";
+      return sellSummary(u);
+    }
+    case "SELL_CONFIRM": {
+      if (id === "list:post") return createListing(u);
+      if (id === "list:cancel") return showMenu(u, "Okay, nothing was listed.");
       return didntGetThat(u);
     }
 
+    // ---- quote
+    case "QUOTE_TEXT": {
+      if (id === "quote:skip") return submitQuote(u, null);
+      if (text) return submitQuote(u, clean(text, 80));
+      return didntGetThat(u);
+    }
+
+    // ---- advertise
+    case "AD_TEXT": {
+      if (text.length < 5) return void (await wa.sendText(to, "Please write your ad in a sentence."));
+      if (await refusedAsBanned(u, text)) return;
+      u.draft.text = clean(text, 120);
+      u.draft.photos = [];
+      u.step = "AD_PHOTO";
+      return prompt(u, () =>
+        wa.sendButtons(to, "Send one photo for your ad (your shop, product or logo). Ads with a photo get far more taps.", [{ id: "photos:skip", title: "No photo" }]),
+      );
+    }
+    case "AD_PHOTO": {
+      if (id === "photos:skip") return askAdWhere(u);
+      return didntGetThat(u);
+    }
+    case "AD_WHERE": {
+      if (id !== "where:city" && id !== "where:any") return didntGetThat(u);
+      u.draft.anywhere = id === "where:any";
+      return adSummary(u);
+    }
+    case "AD_CONFIRM": {
+      if (id === "ad:submit") return submitAd(u);
+      if (id === "ad:cancel") return showMenu(u, "Okay, no ad was created.");
+      return didntGetThat(u);
+    }
+
+    // ---- buying credits
     case "BUY_PAYER": {
       if (id === "pay:self") {
         const own = toLocalNumber(to);
@@ -421,7 +622,6 @@ async function conversation(m: Incoming): Promise<void> {
       if (id === "pay:other") return askOtherNumber(u);
       return didntGetThat(u);
     }
-
     case "BUY_OTHER_NUMBER": {
       const number = normalizeZwMobile(text);
       if (!number) return void (await wa.sendText(to, "That doesn't look like a Zimbabwe mobile number. Please type it like 0771 234 567."));
@@ -437,24 +637,26 @@ async function conversation(m: Incoming): Promise<void> {
 async function askConsent(to: string): Promise<void> {
   await wa.sendButtons(
     to,
-    `👋 Welcome to *${env.APP_NAME}*.\n\nWe connect people who need something with people in ${env.CITY} who offer it: carpenters, mechanics, plumbers, sellers and more.\n\nWe store your name, area and posts. Your number is only shared with people you say yes to.\n\n⚖️ ${env.APP_NAME} only connects you. We aren't part of any deal and aren't responsible for it. Always check people and items yourself.\n\nDo you agree?`,
+    `👋 Welcome to *${env.APP_NAME}*.\n\nTell us what you're looking for and we'll show you who's selling it: cars, fridges, carpenters, mechanics and more. Or sell your own things and services.\n\nBy continuing you agree that:\n• we store your name, town and posts, and only share your number with people you say yes to\n• no illegal goods or services are allowed\n• ${env.APP_NAME} only connects people. We aren't part of any deal and aren't responsible for it.`,
     [
       { id: "consent:yes", title: "I agree" },
+      { id: "terms", title: "Read the rules" },
       { id: "consent:no", title: "No thanks" },
     ],
   );
 }
 
-async function askArea(u: User): Promise<void> {
-  u.step = "ASK_AREA";
+async function showTerms(to: string): Promise<void> {
+  await wa.sendText(
+    to,
+    `*${env.APP_NAME} rules*\n\n1. ${env.APP_NAME} only connects buyers and sellers. We don't sell, deliver or guarantee anything, and we aren't responsible for any deal, payment or item.\n2. No illegal goods or services, e.g. drugs, weapons, stolen goods, fake documents, counterfeit goods or protected wildlife. Posts like these are blocked and accounts removed.\n3. Be honest about items and prices. Listings with 3 confirmed reports are paused.\n4. Your number is only shared when both sides agree to swap numbers.\n5. Credits pay for swaps and ads. Credits on hold come back if a swap doesn't happen.\n6. Stay safe: meet in public, check the item or work, and never pay a deposit before you've seen it.\n\nType MENU to continue.`,
+  );
+}
+
+async function askCity(u: User): Promise<void> {
+  u.step = "ASK_CITY";
   await prompt(u, () =>
-    wa.sendList(
-      u.phone,
-      `Which part of ${env.CITY} are you in? We use this to find people near you.`,
-      "Pick area",
-      AREAS.map((a) => ({ id: `area:${a.key}`, title: a.name })),
-      "Areas",
-    ),
+    wa.sendList(u.phone, "Which town are you in? We show you people nearby first.", "Pick town", CITIES.map((c) => ({ id: `city:${c.key}`, title: c.name })), "Towns"),
   );
 }
 
@@ -467,11 +669,12 @@ async function showMenu(u: User, greeting: string): Promise<void> {
       `${greeting}\n\nWhat would you like to do? You can also just type what you're looking for.`,
       "Choose",
       [
-        { id: "menu:need", title: "I'm looking for…", description: "Post what you need. We'll find people who offer it." },
-        { id: "menu:offer", title: "I offer or sell…", description: "List your skill or goods and get customer leads." },
-        { id: "menu:posts", title: "My posts", description: "See, close or pause your posts. Rate people." },
-        { id: "menu:credits", title: "My credits", description: `Balance: ${plural(ledger.balance(u.phone), "credit")}` },
-        { id: "menu:area", title: "Change my area", description: `Now: ${u.area ? areaName(u.area) : "not set"}` },
+        { id: "menu:find", title: "🔎 Find something", description: "Items or services. See prices side by side." },
+        { id: "menu:sell", title: "🏷️ Sell or offer", description: "List an item or service once. Buyers come to you." },
+        { id: "menu:posts", title: "My posts", description: "See, close or mark as sold. Rate people." },
+        { id: "menu:credits", title: "My credits", description: `Balance: ${credits(ledger.balance(u.phone))}` },
+        { id: "menu:ads", title: "📣 Advertise", description: "Show your business in search results." },
+        { id: "menu:city", title: "Change my town", description: `Now: ${cityName(u.city)}` },
         { id: "menu:help", title: "How it works" },
       ],
       env.APP_NAME,
@@ -482,69 +685,103 @@ async function showMenu(u: User, greeting: string): Promise<void> {
 async function showHelp(u: User): Promise<void> {
   await wa.sendText(
     u.phone,
-    `*How ${env.APP_NAME} works*\n\n🔎 *Looking for something?* Post it. We send it to people near you who offer it. They send you their profile, and you choose who gets your number.\n\n🛠 *Offer a skill or sell things?* List yourself. Matching jobs come to you here. Tap *Interested*, and if the customer accepts, you swap numbers. That uses 1 credit. If they say no, you use nothing.\n\n💳 Swapping numbers uses 1 credit from each side. Everyone gets ${WELCOME_CREDITS} free credits on sign-up. More from ${formatUsd(BUNDLES[0]?.cents ?? 100)}.\n\n⚖️ ${env.APP_NAME} only connects you. We aren't part of any deal and aren't responsible for it.\n\nType MENU any time.`,
+    `*How ${env.APP_NAME} works*\n\n🔎 *Looking for something?* Post it with your budget. Items come back as picture cards, new and pre-loved side by side. For services, providers send you quotes to compare.\n\n🏷️ *Selling?* List it once with photos. Buyers who are looking for it are sent to you. No more posting in groups and hoping.\n\n🤝 *Swapping numbers* happens only when both sides say yes. Each side uses credits (1 for most things, 3 for cars and houses).\n\n🎁 Everyone gets ${WELCOME_CREDITS} free credits. More from ${formatUsd(BUNDLES[0]?.cents ?? 200)}.\n\nType MENU, TERMS or STOP (alerts off) any time.\n\n${LIABILITY}`,
   );
 }
 
-async function askCategory(u: User, mode: "need" | "offer"): Promise<void> {
-  u.step = mode === "need" ? "NEED_CATEGORY" : "OFFER_CATEGORY";
+// ---------------------------------------------------------------- picking a category
+
+async function askKind(u: User, mode: Mode): Promise<void> {
+  u.step = "CAT_KIND";
+  u.draft.mode = mode;
   const body =
-    mode === "need"
+    mode === "find"
       ? u.draft.text
-        ? `Looking for "${fit(u.draft.text, 80)}"? Pick the closest category so we send it to the right people.`
-        : "What are you looking for? Pick a category."
-      : "What do you offer or sell? Pick a category.";
+        ? `Looking for "${fit(u.draft.text, 80)}"? Is it an item or a service?`
+        : "What are you looking for: an item or a service?"
+      : mode === "sell"
+        ? "What would you like to list?"
+        : "What do your customers search for: items or services?";
   await prompt(u, () =>
-    wa.sendList(
-      u.phone,
-      body,
-      "Categories",
-      CATEGORIES.map((c) => ({ id: `cat:${c.key}`, title: c.name, description: fit(`e.g. ${c.example}`, 72) })),
-      "Categories",
-    ),
-  );
-}
-
-// ---------------------------------------------------------------- posting a need
-
-async function askNeedText(u: User): Promise<void> {
-  u.step = "NEED_TEXT";
-  const cat = getCategory(u.draft.category ?? "");
-  await prompt(u, () => wa.sendText(u.phone, `Describe what you need in a few words.\n\nFor example: _${cat?.example ?? "what you need"}_`));
-}
-
-async function askWhen(u: User): Promise<void> {
-  u.step = "NEED_WHEN";
-  await prompt(u, () =>
-    wa.sendButtons(u.phone, "When do you need it?", [
-      { id: "when:today", title: "Today" },
-      { id: "when:week", title: "This week" },
-      { id: "when:flexible", title: "Flexible" },
+    wa.sendButtons(u.phone, body, [
+      { id: "kind:item", title: mode === "sell" ? "Sell an item" : "An item" },
+      { id: "kind:service", title: mode === "sell" ? "Offer a service" : "A service" },
     ]),
   );
 }
 
-async function askBudget(u: User): Promise<void> {
-  u.step = "NEED_BUDGET";
+async function askCategory(u: User): Promise<void> {
+  u.step = "CAT_PICK";
+  const kind = u.draft.kind ?? "item";
   await prompt(u, () =>
-    wa.sendButtons(
+    wa.sendList(
       u.phone,
-      "What's your budget? Type an amount, e.g. _$5_ or _$3,000_.\n\nA budget gets you better replies: people know you're serious.",
-      [{ id: "budget:skip", title: "Not sure yet" }],
+      kind === "item" ? "Pick the category. New and pre-loved are both welcome." : "Pick the closest service.",
+      "Categories",
+      categoriesOf(kind).map((c) => ({ id: `cat:${c.key}`, title: c.name, description: fit(`e.g. ${c.example}`, 72) })),
+      kind === "item" ? "Items" : "Services",
     ),
   );
 }
 
-async function needSummary(u: User): Promise<void> {
-  u.step = "NEED_CONFIRM";
+// ---------------------------------------------------------------- finding something
+
+async function askFindText(u: User): Promise<void> {
+  u.step = "FIND_TEXT";
+  const cat = getCategory(u.draft.category ?? "");
+  await prompt(u, () => wa.sendText(u.phone, `Describe what you're looking for in a few words.\n\nFor example: _${cat?.example ?? "what you need"}_`));
+}
+
+async function askBudget(u: User): Promise<void> {
+  u.step = "FIND_BUDGET";
+  await prompt(u, () =>
+    wa.sendButtons(u.phone, "What's your budget? Type an amount, e.g. _$5_ or _$3,000_.\n\nA budget gets you better replies: sellers know you're serious.", [
+      { id: "budget:skip", title: "Not sure yet" },
+    ]),
+  );
+}
+
+async function askWhen(u: User): Promise<void> {
+  u.step = "FIND_WHEN";
+  await prompt(u, () =>
+    wa.sendList(
+      u.phone,
+      "When do you need it?",
+      "Choose",
+      [
+        { id: "when:today", title: "Today" },
+        { id: "when:week", title: "This week" },
+        { id: "when:date", title: "Pick a date & time", description: "For bookings, events, appointments" },
+        { id: "when:flexible", title: "Flexible" },
+      ],
+      "When",
+    ),
+  );
+}
+
+async function askWhere(u: User): Promise<void> {
+  u.step = "FIND_WHERE";
+  await prompt(u, () =>
+    wa.sendButtons(u.phone, "Where should we look?", [
+      { id: "where:city", title: fit(`In ${cityName(u.city)}`, 20) },
+      { id: "where:any", title: "Anywhere in Zim" },
+    ]),
+  );
+}
+
+function whenLabel(d: { when?: WhenKey; whenText?: string | null }): string {
+  return d.when === "date" && d.whenText ? d.whenText : WHEN_LABEL[d.when ?? "flexible"];
+}
+
+async function findSummary(u: User): Promise<void> {
+  u.step = "FIND_CONFIRM";
   const d = u.draft;
   await prompt(u, () =>
     wa.sendButtons(
       u.phone,
-      `*Check your post*\n\n🔎 "${d.text}"\n🛠 ${catName(d.category ?? "")}\n📍 ${areaName(u.area ?? "")}\n⏱ ${WHEN_LABEL[d.when ?? "flexible"]}\n💵 Budget: ${d.budget ?? "not sure yet"}\n\nYour number stays private. People who can help send you their profile, and you choose who gets your number.`,
+      `*Check your post*\n\n🔎 "${d.text}"\n🏷️ ${catName(d.category ?? "")}\n💵 Budget: ${d.budgetText ?? "not sure yet"}\n⏱ ${whenLabel(d)}\n📍 ${d.anywhere ? "Anywhere in Zimbabwe" : cityName(u.city)}\n\nYour number stays private until you choose to swap.`,
       [
         { id: "need:post", title: "Post it" },
-        { id: "area:change", title: "Change area" },
         { id: "need:cancel", title: "Cancel" },
       ],
     ),
@@ -553,15 +790,21 @@ async function needSummary(u: User): Promise<void> {
 
 async function createNeed(u: User): Promise<void> {
   const d = u.draft;
-  if (!d.category || !d.text || !d.when || !u.area) return showMenu(u, "Something went missing. Let's start again.");
+  const cat = getCategory(d.category ?? "");
+  if (!cat || !d.text || !d.when || !u.city) return showMenu(u, "Something went missing. Let's start again.");
   const need: Need = {
     id: `N-${++needSeq}`,
     owner: u.phone,
-    category: d.category,
-    area: u.area,
+    kind: cat.kind,
+    category: cat.key,
+    city: u.city,
+    anywhere: d.anywhere ?? false,
     text: d.text,
+    budgetText: d.budgetText ?? null,
+    budgetCents: d.budgetCents ?? null,
     when: d.when,
-    budget: d.budget ?? null,
+    whenText: d.whenText ?? null,
+    alert: false,
     createdAt: Date.now(),
     status: "OPEN",
     connections: 0,
@@ -571,208 +814,451 @@ async function createNeed(u: User): Promise<void> {
   u.step = "MENU";
   u.reprompt = null;
   console.log(`[NEED] ${need.id} posted (${need.category})`);
-
-  const matches = pickMatches(need, [...offers.values()], new Set(), LEADS_PER_NEED);
-  const people = getCategory(need.category)?.people ?? "people";
-  if (matches.length === 0) {
-    await wa.sendText(
-      u.phone,
-      `✅ Posted (${need.id}).\n\nNo ${people} near you are listed yet. Your post stays open for 7 days, and we'll send it to anyone who joins. You'll hear from us here.`,
-    );
-  } else {
-    await wa.sendText(
-      u.phone,
-      `✅ Posted (${need.id}).\n\nWe've sent it to ${matches.length} ${matches.length === 1 ? people.replace(/s$/, "") : people} near you. When someone's interested, you'll see their profile here and choose whether to swap numbers.`,
-    );
-  }
-  for (const offer of matches) await createLead(need, offer);
+  track("post_created", u.phone, { category: need.category, kind: need.kind, has_budget: need.budgetCents !== null, anywhere: need.anywhere, dated: need.when === "date" });
+  if (need.kind === "item") return showItemCards(u, need);
+  return sendToProviders(u, need);
 }
 
-// ---------------------------------------------------------------- listing an offer
-
-async function startOffer(u: User): Promise<void> {
-  if (activeOffersOf(u.phone).length >= MAX_ACTIVE_OFFERS) {
-    await wa.sendText(u.phone, `You already have ${MAX_ACTIVE_OFFERS} active listings. Pause one in *My posts* to add another.`);
-    return showMenu(u, "Main menu");
-  }
-  return askCategory(u, "offer");
+/** Picks one live sponsored card for this search, if any. Rotates by fewest views. */
+function pickAd(category: string, city: string): Ad | null {
+  const ad = [...ads.values()]
+    .filter((a) => a.status === "LIVE" && a.category === category && (a.city === null || a.city === city) && ledger.balance(a.owner) >= AD_TAP_COST)
+    .sort((x, y) => x.views - y.views)[0];
+  if (ad) ad.views += 1;
+  return ad ?? null;
 }
 
-async function askOfferText(u: User): Promise<void> {
-  u.step = "OFFER_TEXT";
-  await prompt(u, () =>
-    wa.sendText(
+async function showItemCards(u: User, need: Need): Promise<void> {
+  const found = rankItems(need, [...listings.values()].filter((l) => l.kind === "item"), CARDS_PER_RESULT);
+  const ad = pickAd(need.category, need.city);
+  const cost = costOf(need.category);
+  track(found.length ? "cards_shown" : "post_no_match", u.phone, { category: need.category, count: found.length, sponsored: Boolean(ad) });
+
+  if (found.length === 0) {
+    if (ad) await sendAdCard(u.phone, ad);
+    await wa.sendButtons(
       u.phone,
-      "Describe what you sell or the service you offer, in one or two lines. Buyers see this.\n\nFor example:\n_Selling Toyota Vitz 2010, 95,000 km, very clean._\n_Carpenter. Wardrobes, doors, kitchen units. 10 years' experience._",
-    ),
+      `✅ Posted (${need.id}).\n\nNobody is selling this ${need.anywhere ? "on Scoutly" : `in ${cityName(need.city)}`} yet. Want a message as soon as someone lists it?`,
+      [
+        { id: `alert:on:${need.id}`, title: "Yes, alert me" },
+        { id: `alert:off:${need.id}`, title: "No thanks" },
+      ],
+    );
+    return;
+  }
+
+  const cards: CarouselCard[] = found.map((l) => ({
+    imageUrl: cardImage(l),
+    text: cardText(l),
+    buttons: [{ id: `int:${l.id}:${need.id}`, title: "I'm interested" }],
+  }));
+  if (ad) cards.push({ imageUrl: ad.photo ?? demoPhoto("no-photo.jpg"), text: `Sponsored\n${fit(ad.text, 140)}`, buttons: [{ id: `adtap:${ad.id}`, title: "Contact them" }] });
+
+  const intro = `${found.length} ${found.length === 1 ? "match" : "matches"} for "${fit(need.text, 50)}", best matches first. Swipe to compare 👉`;
+  let sent = false;
+  if (cards.length >= 2) sent = await wa.sendCarousel(u.phone, intro, cards);
+  else if (cards[0]) sent = await wa.sendButtons(u.phone, cards[0].text, cards[0].buttons, { imageUrl: cards[0].imageUrl });
+  if (!sent) {
+    await wa.sendList(
+      u.phone,
+      intro.replace(" Swipe to compare 👉", " Tap one:"),
+      "See matches",
+      found.slice(0, 10).map((l) => ({ id: `int:${l.id}:${need.id}`, title: fit(l.title, 24), description: fit(`${priceLabel(l)} · ${l.condition ? CONDITION_LABEL[l.condition] : ""} · ${badges(l)}`, 72) })),
+      "Matches",
+    );
+  }
+  await wa.sendButtons(
+    u.phone,
+    `✅ Posted (${need.id}).\n\nTap *I'm interested* on any card and we'll ask the seller. Swapping numbers uses ${credits(cost)} (you have ${ledger.balance(u.phone)}).\n\nWant a message when new matches are listed?`,
+    [
+      { id: `alert:on:${need.id}`, title: "Alert me" },
+      { id: `alert:off:${need.id}`, title: "No thanks" },
+      { id: "menu:main", title: "Main menu" },
+    ],
   );
 }
 
-async function askCover(u: User): Promise<void> {
-  u.step = "OFFER_COVER";
+async function sendAdCard(to: string, ad: Ad): Promise<void> {
+  await wa.sendButtons(to, `📣 *Sponsored*\n${ad.text}`, [{ id: `adtap:${ad.id}`, title: "Contact them" }], ad.photo ? { imageUrl: ad.photo } : {});
+}
+
+async function sendToProviders(u: User, need: Need): Promise<void> {
+  const matches = rankProviders(need, [...listings.values()].filter((l) => l.kind === "service"), new Set(), LEADS_PER_NEED);
+  const people = getCategory(need.category)?.people ?? "people";
+  const ad = pickAd(need.category, need.city);
+  track(matches.length ? "leads_sent" : "post_no_match", u.phone, { category: need.category, count: matches.length });
+  if (matches.length === 0) {
+    await wa.sendText(u.phone, `✅ Posted (${need.id}).\n\nNo ${people} ${need.anywhere ? "on Scoutly" : `in ${cityName(need.city)}`} are listed yet. Your post stays open for 7 days, and we'll send it to anyone who joins.`);
+  } else {
+    await wa.sendText(
+      u.phone,
+      `✅ Posted (${need.id}).\n\nWe've sent it to ${plural(matches.length, "provider")} (${people}). Their quotes will arrive here, and you choose who to swap numbers with. Your number stays private until then.`,
+    );
+  }
+  if (ad) await sendAdCard(u.phone, ad);
+  for (const l of matches) await createProviderLead(need, l);
+}
+
+// ---------------------------------------------------------------- selling something
+
+async function startSell(u: User): Promise<void> {
+  if (activeListingsOf(u.phone).length >= MAX_ACTIVE_LISTINGS) {
+    await wa.sendText(u.phone, `You already have ${MAX_ACTIVE_LISTINGS} active listings. Mark one as sold or pause it in *My posts* to add another.`);
+    return showMenu(u, "Main menu");
+  }
+  return askKind(u, "sell");
+}
+
+async function askSellTitle(u: User): Promise<void> {
+  u.step = "SELL_TITLE";
+  await prompt(u, () => wa.sendText(u.phone, "What are you selling? Name it in a few words.\n\nFor example: _Defy combi fridge 250L_ or _Toyota Vitz 2010_"));
+}
+
+async function askSellDesc(u: User): Promise<void> {
+  u.step = "SELL_DESC";
+  if (u.draft.kind === "service") {
+    return prompt(u, () =>
+      wa.sendText(u.phone, "Describe your service in one or two lines. Buyers see this.\n\nFor example: _Carpenter. Wardrobes, doors, kitchen units. 10 years' experience._"),
+    );
+  }
   await prompt(u, () =>
-    wa.sendButtons(u.phone, `Which jobs do you want?\n\nYour area: ${areaName(u.area ?? "")}`, [
-      { id: "cover:area", title: "Only my area" },
-      { id: "cover:all", title: `All of ${fit(env.CITY, 12)}` },
+    wa.sendButtons(u.phone, "Add a short description: size, model, condition, anything buyers should know.\n\nFor example: _Silver, A+ energy, boxed with warranty._", [
+      { id: "desc:skip", title: "Skip" },
+    ]),
+  );
+}
+
+async function askCondition(u: User): Promise<void> {
+  u.step = "SELL_COND";
+  await prompt(u, () =>
+    wa.sendButtons(u.phone, "Is it new or pre-loved?", [
+      { id: "cond:new", title: "New" },
+      { id: "cond:good", title: "Pre-loved: good" },
+      { id: "cond:used", title: "Pre-loved: used" },
     ]),
   );
 }
 
 async function askPrice(u: User): Promise<void> {
-  u.step = "OFFER_PRICE";
+  u.step = "SELL_PRICE";
+  if (u.draft.kind === "item") return prompt(u, () => wa.sendText(u.phone, "What's your price in US dollars? e.g. *520*"));
   await prompt(u, () =>
-    wa.sendButtons(u.phone, "What's your asking price or starting price? Type it, e.g. _$3,000_ or _From $15 call-out_. Or tap Skip.", [{ id: "price:skip", title: "Skip" }]),
+    wa.sendButtons(u.phone, "What's your starting price? e.g. _From $15 call-out_. Or tap Skip.", [{ id: "price:skip", title: "Skip" }]),
   );
 }
 
-async function offerSummary(u: User): Promise<void> {
-  u.step = "OFFER_CONFIRM";
+async function askPhotos(u: User): Promise<void> {
+  u.step = "SELL_PHOTOS";
+  u.draft.photos = u.draft.photos ?? [];
+  const what = u.draft.kind === "item" ? "it" : "your past work";
+  await prompt(u, () =>
+    wa.sendButtons(u.phone, `📸 Send up to 3 photos of ${what} now. Listings with photos get far more interest.\n\nTap *Done* when you've sent them.`, [
+      { id: "photos:done", title: "Done" },
+      { id: "photos:skip", title: "No photos" },
+    ]),
+  );
+}
+
+async function addListingPhoto(u: User, mediaId: string): Promise<void> {
+  const photos = (u.draft.photos = u.draft.photos ?? []);
+  if (photos.length >= 3) return askCover(u);
+  const link = await savePhoto(mediaId);
+  if (!link) return void (await wa.sendText(u.phone, "Sorry, that photo didn't come through. Please send it again."));
+  photos.push(link);
+  if (photos.length >= 3) {
+    await wa.sendText(u.phone, "📸 3 photos saved.");
+    return askCover(u);
+  }
+  await wa.sendButtons(u.phone, `📸 Photo ${photos.length} saved. Send another, or tap Done.`, [{ id: "photos:done", title: "Done" }]);
+}
+
+async function askCover(u: User): Promise<void> {
+  u.step = "SELL_COVER";
+  await prompt(u, () =>
+    wa.sendButtons(u.phone, "Who can buy from you?", [
+      { id: "cover:city", title: fit(`Only ${cityName(u.city)}`, 20) },
+      { id: "cover:all", title: "All of Zimbabwe" },
+    ]),
+  );
+}
+
+async function sellSummary(u: User): Promise<void> {
+  u.step = "SELL_CONFIRM";
   const d = u.draft;
+  const isItem = d.kind === "item";
+  const price = isItem ? dollars(d.priceCents ?? 0) : d.priceText ?? "No price shown";
+  const score = profileScore({ photos: d.photos?.length ?? 0, text: d.text ?? "", hasPrice: isItem || Boolean(d.priceText), verified: u.verified });
   await prompt(u, () =>
     wa.sendButtons(
       u.phone,
-      `*Check your listing*\n\n👤 ${u.name}\n🛠 ${catName(d.category ?? "")}\n"${d.text}"\n📍 ${coverage({ area: u.area ?? "", coversAll: d.coversAll ?? false })}\n💵 ${d.price ?? "No price shown"}\n\nCustomers see this, with your rating, when you say you're interested in their job.`,
+      `*Check your listing*\n\n${isItem ? `🏷️ ${d.title}` : `👤 ${u.name}`}\n${catName(d.category ?? "")}${d.condition ? ` · ${CONDITION_LABEL[d.condition]}` : ""}\n💵 ${price}\n📸 ${plural(d.photos?.length ?? 0, "photo")}\n📍 ${d.nationwide ? "All of Zimbabwe" : cityName(u.city)}${d.text ? `\n"${fit(d.text, 200)}"` : ""}\n\n📈 Listing score: ${score.score}%${score.tip ? `. ${score.tip}` : ""}`,
       [
-        { id: "offer:post", title: "List me" },
-        { id: "offer:cancel", title: "Cancel" },
+        { id: "list:post", title: "List it" },
+        { id: "list:cancel", title: "Cancel" },
       ],
+      d.photos?.[0] ? { imageUrl: d.photos[0] } : {},
     ),
   );
 }
 
-async function createOffer(u: User): Promise<void> {
+async function createListing(u: User): Promise<void> {
   const d = u.draft;
-  if (!d.category || !d.text || d.coversAll === undefined || !u.area) return showMenu(u, "Something went missing. Let's start again.");
-  const offer: Offer = {
-    id: `O-${++offerSeq}`,
+  const cat = getCategory(d.category ?? "");
+  if (!cat || !u.city || d.nationwide === undefined || (cat.kind === "item" && (!d.title || d.priceCents == null))) {
+    return showMenu(u, "Something went missing. Let's start again.");
+  }
+  const l: Listing = {
+    id: `O-${++listingSeq}`,
     owner: u.phone,
-    name: u.name ?? "Provider",
-    category: d.category,
-    area: u.area,
-    coversAll: d.coversAll,
-    text: d.text,
-    price: d.price ?? null,
+    kind: cat.kind,
+    category: cat.key,
+    city: u.city,
+    nationwide: d.nationwide,
+    title: cat.kind === "item" ? d.title ?? "" : `${u.name ?? "Provider"} · ${cat.name}`,
+    text: d.text ?? "",
+    priceCents: cat.kind === "item" ? d.priceCents ?? null : null,
+    priceText: cat.kind === "service" ? d.priceText ?? null : null,
+    condition: d.condition ?? null,
+    photos: d.photos ?? [],
     active: true,
+    sold: false,
     ratingSum: 0,
     ratingCount: 0,
     jobs: 0,
     strikes: 0,
     sample: false,
+    sampleQuote: null,
     createdAt: Date.now(),
   };
-  offers.set(offer.id, offer);
+  listings.set(l.id, l);
   u.draft = {};
   u.step = "MENU";
   u.reprompt = null;
-  console.log(`[OFFER] ${offer.id} listed (${offer.category})`);
+  console.log(`[LISTING] ${l.id} listed (${l.category})`);
+  track("listing_created", u.phone, { category: l.category, kind: l.kind, condition: l.condition, photos: l.photos.length, nationwide: l.nationwide });
   await wa.sendText(
     u.phone,
-    `✅ *You're listed* (${offer.id})\n🛠 ${catName(offer.category)} · 📍 ${coverage(offer)}\n\nWhen someone near you posts that they're looking for this, it comes to you here. No more posting in groups and hoping. Tap *Interested* and we'll show them your listing.\n\nYou have ${plural(ledger.balance(u.phone), "credit")}. 1 credit is used only when a buyer accepts and you swap numbers.`,
+    `✅ *You're listed* (${l.id})\n\nWhen someone ${l.kind === "item" ? "looks for this" : "posts a matching job"}, it comes to you here. No more posting in groups and hoping.\n\nYou have ${credits(ledger.balance(u.phone))}. A swap uses ${credits(cat.swapCost)}, only when you accept.`,
   );
 
-  // Open needs posted before this listing existed.
-  const waiting = [...needs.values()]
-    .filter((n) => n.status === "OPEN" && n.connections < MAX_CONNECTIONS_PER_NEED && score(n, offer) !== null)
-    .filter((n) => !leadsFor(n.id).some((l) => l.offerId === offer.id))
-    .filter((n) => leadsFor(n.id).filter((l) => l.status !== "PASSED" && l.status !== "EXPIRED").length < LEADS_PER_NEED + 2)
+  // Open posts from before this listing existed.
+  const open = [...needs.values()]
+    .filter((n) => n.status === "OPEN" && n.category === l.category && n.connections < MAX_CONNECTIONS_PER_NEED && eligible(n, l))
     .sort((x, y) => y.createdAt - x.createdAt)
     .slice(0, 5);
-  if (waiting.length) await wa.sendText(u.phone, `📬 ${plural(waiting.length, "job")} already waiting for you:`);
-  for (const need of waiting) await createLead(need, offer);
+  if (l.kind === "item") {
+    for (const n of open.filter((x) => x.alert)) {
+      track("alert_sent", n.owner, { category: n.category });
+      await wa.sendButtons(
+        n.owner,
+        `🔔 *New match* for your post "${fit(n.text, 40)}"\n\n${cardText(l)}`,
+        [
+          { id: `int:${l.id}:${n.id}`, title: "I'm interested" },
+          { id: `alert:off:${n.id}`, title: "Stop alerts" },
+        ],
+        { imageUrl: cardImage(l) },
+      );
+    }
+  } else {
+    const waiting = open.filter((n) => !leadsFor(n.id).some((x) => x.offerId === l.id) && leadsFor(n.id).length < LEADS_PER_NEED + 2);
+    if (waiting.length) await wa.sendText(u.phone, `📬 ${plural(waiting.length, "job")} already waiting for you:`);
+    for (const n of waiting) await createProviderLead(n, l);
+  }
 }
 
-// ---------------------------------------------------------------- leads
+// ---------------------------------------------------------------- items: buyer taps a card
 
-async function createLead(need: Need, offer: Offer): Promise<void> {
-  const lead: Lead = {
-    id: `L${++leadSeq}`,
-    needId: need.id,
-    offerId: offer.id,
-    provider: offer.owner,
-    customer: need.owner,
-    status: "OFFERED",
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    rated: false,
-    reported: false,
-  };
-  leads.set(lead.id, lead);
-  if (offer.sample) {
-    setTimeout(() => void sampleInterested(lead.id), env.SAMPLE_REPLY_SECONDS * 1000);
+async function buyerInterested(u: User, listingId: string, needId: string | null): Promise<void> {
+  const l = listings.get(listingId);
+  if (!l || !l.active || l.sold) return void (await wa.sendText(u.phone, "Sorry, that item is no longer available."));
+  if (l.owner === u.phone) return void (await wa.sendText(u.phone, "That's your own listing 🙂"));
+  const existing = [...leads.values()].find((x) => x.offerId === l.id && x.customer === u.phone && (isOpen(x) || x.status === "CONNECTED"));
+  if (existing?.status === "CONNECTED") return void (await wa.sendText(u.phone, `You're already connected with ${nameOf(l.owner)}. Their number is in the chat above.`));
+  if (existing) return void (await wa.sendText(u.phone, `We've already asked ${nameOf(l.owner)}. We'll tell you as soon as they reply.`));
+
+  const cost = costOf(l.category);
+  const leadId = `L${++leadSeq}`;
+  if (!ledger.hold(u.phone, `${leadId}:c`, cost)) {
+    u.pendingCard = { listingId, needId };
+    track("out_of_credits", u.phone, { role: "buyer", category: l.category });
+    await wa.sendButtons(
+      u.phone,
+      `Swapping numbers for this uses ${credits(cost)}. You have ${credits(ledger.balance(u.phone))}.\n\nBuy credits and we'll ask the seller straight after payment.`,
+      [
+        { id: "menu:credits", title: "Buy credits" },
+        { id: "menu:main", title: "Main menu" },
+      ],
+    );
     return;
   }
-  await sendLeadToProvider(lead);
+  const lead: Lead = {
+    id: leadId, needId, offerId: l.id, provider: l.owner, customer: u.phone, origin: "card", cost, quote: null,
+    status: "OFFERED", createdAt: Date.now(), updatedAt: Date.now(), rated: false, reported: false,
+  };
+  leads.set(lead.id, lead);
+  track("interest_sent", u.phone, { category: l.category, condition: l.condition });
+  await wa.sendText(u.phone, `👍 We've asked ${nameOf(l.owner)} about the *${fit(l.title, 40)}*. ${credits(cost)} on hold, and they come back if they say no.`);
+  if (l.sample) {
+    setTimeout(() => void sellerResponds(l.owner, lead.id, true), env.SAMPLE_REPLY_SECONDS * 1000);
+    return;
+  }
+  const need = needId ? needs.get(needId) : undefined;
+  await wa.sendButtons(
+    l.owner,
+    `🙋 *${nameOf(u.phone)} is interested* in your ${fit(l.title, 40)} (${priceLabel(l)})\n💵 Their budget: ${need?.budgetText ?? "not given"}\n⏱ ${need ? whenLabel(need) : "Not given"}\n📍 ${cityName(users.get(u.phone)?.city ?? null)}\n\nAccept to swap numbers. Uses ${credits(cost)} (you have ${ledger.balance(l.owner)}).`,
+    [
+      { id: `sell:yes:${lead.id}`, title: "Accept" },
+      { id: `sell:no:${lead.id}`, title: "Decline" },
+      { id: `sold:${l.id}`, title: "It's sold" },
+    ],
+  );
 }
 
-async function sendLeadToProvider(lead: Lead): Promise<void> {
-  const need = needs.get(lead.needId);
-  if (!need) return;
-  const balance = ledger.balance(lead.provider);
+async function sellerResponds(to: string, leadId: string, accept: boolean): Promise<void> {
+  const lead = leads.get(leadId);
+  if (!lead || lead.provider !== to || lead.origin !== "card") return void (await tell(to, "That request is no longer available."));
+  if (lead.status !== "OFFERED") return void (await tell(to, lead.status === "CONNECTED" ? "You're already connected. Their number is above." : "That request has closed."));
+  const l = listings.get(lead.offerId);
+  if (!l) return;
+  if (!accept) {
+    moveLead(lead, "PASSED");
+    ledger.release(`${lead.id}:c`);
+    await tell(to, "Okay, we've let them know.");
+    await wa.sendText(lead.customer, `${nameOf(to)} can't help with the ${fit(l.title, 40)} this time. Your ${credits(lead.cost)} are back.`);
+    return;
+  }
+  if (!ledger.hold(to, lead.id, lead.cost)) {
+    const u = users.get(to);
+    if (u) u.pendingLeadId = lead.id;
+    track("out_of_credits", to, { role: "seller", category: l.category });
+    await wa.sendButtons(to, `You need ${credits(lead.cost)} to swap numbers. You have ${credits(ledger.balance(to))}.\n\nBuy credits and we'll swap straight after payment.`, [
+      { id: "menu:credits", title: "Buy credits" },
+      { id: `sell:no:${lead.id}`, title: "Decline" },
+    ]);
+    return;
+  }
+  moveLead(lead, "INTERESTED");
+  await connect(lead);
+}
+
+// ---------------------------------------------------------------- services: leads and quotes
+
+async function createProviderLead(need: Need, l: Listing): Promise<void> {
+  const lead: Lead = {
+    id: `L${++leadSeq}`, needId: need.id, offerId: l.id, provider: l.owner, customer: need.owner, origin: "need",
+    cost: costOf(need.category), quote: null, status: "OFFERED", createdAt: Date.now(), updatedAt: Date.now(), rated: false, reported: false,
+  };
+  leads.set(lead.id, lead);
+  if (l.sample) {
+    setTimeout(() => void sampleQuote(lead.id), env.SAMPLE_REPLY_SECONDS * 1000);
+    return;
+  }
   await wa.sendButtons(
     lead.provider,
-    `📣 *New lead · ${catName(need.category)}*\n\n"${need.text}"\n📍 ${areaName(need.area)} · ⏱ ${WHEN_LABEL[need.when]}\n💵 Budget: ${need.budget ?? "not given"}\n\nInterested? We'll show them your profile. You only use 1 credit if they accept and you swap numbers.\n\nYour balance: ${plural(balance, "credit")}.`,
+    `📣 *New job · ${catName(need.category)}*\n\n"${need.text}"\n💵 Budget: ${need.budgetText ?? "not given"}\n⏱ ${whenLabel(need)}\n📍 ${cityName(need.city)}\n\nSend a quote and we'll show them your profile. You use ${credits(lead.cost)} only if they accept.\nYour balance: ${credits(ledger.balance(lead.provider))}.`,
     [
-      { id: `lead:yes:${lead.id}`, title: "Interested" },
+      { id: `lead:yes:${lead.id}`, title: "Send a quote" },
       { id: `lead:no:${lead.id}`, title: "Not for me" },
     ],
   );
 }
 
-async function providerResponds(to: string, leadId: string, interested: boolean): Promise<void> {
+async function providerResponds(u: User, leadId: string, yes: boolean): Promise<void> {
+  const to = u.phone;
   const lead = leads.get(leadId);
-  if (!lead || lead.provider !== to) return void (await wa.sendText(to, "That lead is no longer available."));
-  const need = needs.get(lead.needId);
-  if (lead.status === "INTERESTED") return void (await wa.sendText(to, "You've already said you're interested. We'll tell you when the customer replies."));
-  if (lead.status !== "OFFERED") return void (await wa.sendText(to, "This lead has closed."));
+  if (!lead || lead.provider !== to || lead.origin !== "need") return void (await wa.sendText(to, "That job is no longer available."));
+  if (lead.status === "INTERESTED") return void (await wa.sendText(to, "You've already sent a quote. We'll tell you when the customer replies."));
+  if (lead.status !== "OFFERED") return void (await wa.sendText(to, "This job has closed."));
+  const need = lead.needId ? needs.get(lead.needId) : undefined;
   if (!need || need.status !== "OPEN") {
     moveLead(lead, "EXPIRED");
     return void (await wa.sendText(to, "Sorry, the customer has already found someone or closed this post."));
   }
-  if (!interested) {
+  if (!yes) {
     moveLead(lead, "PASSED");
     return void (await wa.sendText(to, "Okay, we won't send that one again."));
   }
-  if (!ledger.hold(to, lead.id)) {
-    const u = users.get(to);
-    if (u) u.pendingLeadId = lead.id;
-    await wa.sendButtons(
-      to,
-      `You need 1 credit to show this customer your profile. You have ${plural(ledger.balance(to), "credit")}.\n\nBuy credits and we'll send your profile straight after payment.`,
-      [
-        { id: "menu:credits", title: "Buy credits" },
-        { id: `lead:no:${lead.id}`, title: "Not for me" },
-      ],
-    );
+  if (ledger.balance(to) < lead.cost) {
+    u.pendingLeadId = lead.id;
+    track("out_of_credits", to, { role: "provider", category: need.category });
+    await wa.sendButtons(to, `You need ${credits(lead.cost)} to quote. You have ${credits(ledger.balance(to))}.\n\nBuy credits and you can quote straight after payment.`, [
+      { id: "menu:credits", title: "Buy credits" },
+      { id: `lead:no:${lead.id}`, title: "Not for me" },
+    ]);
     return;
   }
+  u.quoteLeadId = lead.id;
+  u.step = "QUOTE_TEXT";
+  await prompt(u, () =>
+    wa.sendButtons(to, "💬 Type your price and timing for this job.\n\nFor example: _$850, paint included, 4 days_", [{ id: "quote:skip", title: "No price yet" }]),
+  );
+}
+
+async function submitQuote(u: User, quote: string | null): Promise<void> {
+  const lead = leads.get(u.quoteLeadId ?? "");
+  u.quoteLeadId = null;
+  u.step = "MENU";
+  u.reprompt = null;
+  if (!lead || lead.status !== "OFFERED") return void (await wa.sendText(u.phone, "This job has closed."));
+  if (!ledger.hold(u.phone, lead.id, lead.cost)) {
+    u.pendingLeadId = lead.id;
+    return void (await wa.sendButtons(u.phone, `You need ${credits(lead.cost)} to quote.`, [{ id: "menu:credits", title: "Buy credits" }]));
+  }
+  lead.quote = quote;
   moveLead(lead, "INTERESTED");
-  await wa.sendText(to, "👍 We've sent your profile to the customer. 1 credit is on hold, and you get it back if they say no.");
+  track("quote_sent", u.phone, { has_price: quote !== null });
+  await wa.sendText(u.phone, `👍 Quote sent. ${credits(lead.cost)} on hold, and they come back if the customer says no.`);
   await introduceProvider(lead);
 }
 
-async function sampleInterested(leadId: string): Promise<void> {
+async function sampleQuote(leadId: string): Promise<void> {
   const lead = leads.get(leadId);
-  const need = lead ? needs.get(lead.needId) : undefined;
-  if (!lead || !need || lead.status !== "OFFERED" || need.status !== "OPEN") return;
-  if (!ledger.hold(lead.provider, lead.id)) return;
+  const need = lead?.needId ? needs.get(lead.needId) : undefined;
+  const l = lead ? listings.get(lead.offerId) : undefined;
+  if (!lead || !need || !l || lead.status !== "OFFERED" || need.status !== "OPEN") return;
+  if (!ledger.hold(lead.provider, lead.id, lead.cost)) return;
+  lead.quote = l.sampleQuote;
   moveLead(lead, "INTERESTED");
   await introduceProvider(lead);
 }
 
-async function introduceProvider(lead: Lead): Promise<void> {
-  const offer = offers.get(lead.offerId);
-  const need = needs.get(lead.needId);
-  if (!offer || !need) return;
+async function introduceProvider(lead: Lead, again = false): Promise<void> {
+  const l = listings.get(lead.offerId);
+  const need = lead.needId ? needs.get(lead.needId) : undefined;
+  if (!l || !need) return;
   await wa.sendButtons(
     lead.customer,
-    `🙋 *${offer.name}* can help with "${fit(need.text, 60)}"\n\n🛠 ${catName(offer.category)}\n📍 ${coverage(offer)}\n${ratingLine(offer)}\n"${offer.text}"${offer.price ? `\n💵 ${offer.price}` : ""}\n\nSwap numbers with ${offer.name}? Uses 1 of your credits (you have ${ledger.balance(lead.customer)}).`,
+    `🙋 *${nameOf(l.owner)}* ${again ? "" : "sent a quote "}for "${fit(need.text, 50)}"\n\n💵 *${lead.quote ?? "No price yet: ask when you chat"}*\n${badges(l)}\n🏷️ ${catName(l.category)}${l.priceText ? ` · ${l.priceText}` : ""}\n"${fit(l.text, 150)}"\n\nSwap numbers? Uses ${credits(lead.cost)} (you have ${ledger.balance(lead.customer)}).`,
     [
       { id: `conn:yes:${lead.id}`, title: "Swap numbers" },
       { id: `conn:no:${lead.id}`, title: "No thanks" },
       { id: `report:${lead.id}`, title: "Report" },
     ],
-    offer.sample ? { footer: "Sample provider for the demo" } : {},
+    { ...(l.photos[0] ? { imageUrl: l.photos[0] } : {}), ...(l.sample ? { footer: "Sample provider for the demo" } : {}) },
   );
+  if (again) return;
+  const quotes = leadsFor(need.id).filter((x) => x.status === "INTERESTED" || x.status === "CONNECTED");
+  if (quotes.length >= 2) {
+    const sorted = [...quotes].sort((x, y) => quoteCents(x.quote) - quoteCents(y.quote));
+    await wa.sendList(
+      lead.customer,
+      `📊 *${quotes.length} quotes so far*, cheapest first. Tap one to see it again.`,
+      "Compare quotes",
+      sorted.slice(0, 10).map((x) => {
+        const p = listings.get(x.offerId);
+        return { id: `q:${x.id}`, title: fit(nameOf(x.provider), 24), description: fit(`${x.quote ?? "No price yet"} · ${p ? badges(p) : ""}`, 72) };
+      }),
+      "Quotes",
+    );
+  }
+}
+
+async function showQuote(to: string, leadId: string): Promise<void> {
+  const lead = leads.get(leadId);
+  if (!lead || lead.customer !== to) return void (await wa.sendText(to, "That's no longer available."));
+  if (lead.status === "CONNECTED") return void (await wa.sendText(to, `You're already connected with ${nameOf(lead.provider)}.`));
+  if (lead.status !== "INTERESTED") return void (await wa.sendText(to, "That quote is no longer available."));
+  await introduceProvider(lead, true);
 }
 
 async function customerResponds(to: string, leadId: string, accept: boolean): Promise<void> {
@@ -780,51 +1266,70 @@ async function customerResponds(to: string, leadId: string, accept: boolean): Pr
   if (!lead || lead.customer !== to) return void (await wa.sendText(to, "That's no longer available."));
   if (lead.status === "CONNECTED") return void (await wa.sendText(to, "You're already connected. Their number is in the message above."));
   if (lead.status !== "INTERESTED") return void (await wa.sendText(to, "That's no longer available."));
-  const need = needs.get(lead.needId);
-  const offer = offers.get(lead.offerId);
-  if (!need || !offer) return;
-  if (need.status !== "OPEN") return void (await wa.sendText(to, "This post is closed. Post again from the menu if you still need help."));
+  const need = lead.needId ? needs.get(lead.needId) : undefined;
+  if (need && need.status !== "OPEN") return void (await wa.sendText(to, "This post is closed. Post again from the menu if you still need help."));
 
   if (!accept) {
     moveLead(lead, "DECLINED");
     ledger.release(lead.id);
-    await wa.sendText(to, `Okay. We won't share your number with ${offer.name}.`);
-    await tell(lead.provider, `The customer for "${fit(need.text, 50)}" chose someone else this time. Your credit is back. Balance: ${plural(ledger.balance(lead.provider), "credit")}.`);
+    await wa.sendText(to, `Okay. We won't share your number with ${nameOf(lead.provider)}.`);
+    await tell(lead.provider, `The customer chose someone else this time. Your ${credits(lead.cost)} are back. Balance: ${credits(ledger.balance(lead.provider))}.`);
     return;
   }
-
-  const customerKey = `${lead.id}:c`;
-  if (!ledger.isHeld(customerKey) && !ledger.hold(to, customerKey)) {
+  if (!ledger.isHeld(`${lead.id}:c`) && !ledger.hold(to, `${lead.id}:c`, lead.cost)) {
     const u = users.get(to);
     if (u) u.pendingConnId = lead.id;
-    await wa.sendButtons(
-      to,
-      `You need 1 credit to swap numbers with ${offer.name}. You have ${plural(ledger.balance(to), "credit")}.\n\nBuy credits and we'll swap numbers straight after payment.`,
-      [
-        { id: "menu:credits", title: "Buy credits" },
-        { id: `conn:no:${lead.id}`, title: "No thanks" },
-      ],
-    );
+    track("out_of_credits", to, { role: "buyer", category: need?.category ?? "" });
+    await wa.sendButtons(to, `You need ${credits(lead.cost)} to swap numbers with ${nameOf(lead.provider)}. You have ${credits(ledger.balance(to))}.\n\nBuy credits and we'll swap straight after payment.`, [
+      { id: "menu:credits", title: "Buy credits" },
+      { id: `conn:no:${lead.id}`, title: "No thanks" },
+    ]);
     return;
   }
-  ledger.capture(customerKey);
-  moveLead(lead, "CONNECTED");
+  await connect(lead);
+}
+
+/** Both sides said yes: spend the held credits and send each the other's number. */
+async function connect(lead: Lead): Promise<void> {
+  if (!moveLead(lead, "CONNECTED")) return;
   ledger.capture(lead.id);
-  need.connections += 1;
-  offer.jobs += 1;
-  console.log(`[CONNECT] ${lead.id} need ${need.id} ↔ offer ${offer.id}`);
+  ledger.capture(`${lead.id}:c`);
+  const l = listings.get(lead.offerId);
+  const need = lead.needId ? needs.get(lead.needId) : undefined;
+  if (l) l.jobs += 1;
+  if (need) need.connections += 1;
+  console.log(`[CONNECT] ${lead.id} (${lead.origin})`);
+  track("numbers_swapped", lead.customer, { category: l?.category ?? "", origin: lead.origin, cost: lead.cost });
+  const what = l ? (l.kind === "item" ? `the ${fit(l.title, 40)} (${priceLabel(l)})` : catName(l.category)) : "your post";
+
   await wa.sendText(
-    to,
-    `✅ *You're connected with ${offer.name}*\n📞 ${prettyPhone(offer.owner)}\n💬 Chat now: ${chatLink(offer.owner)}\n\nAgree the price and timing before any work starts. Never pay a deposit before you've met them and seen the work or item.\n\nWhen it's done, rate them in *My posts*.\n\n1 credit used. Balance: ${plural(ledger.balance(to), "credit")}.\n⚖️ ${env.APP_NAME} only connects you. We aren't part of any deal and aren't responsible for it.${offer.sample ? "\n\n(Sample provider: this number isn't real.)" : ""}`,
+    lead.customer,
+    `✅ *You're connected with ${nameOf(lead.provider)}* about ${what}\n📞 ${prettyPhone(lead.provider)}\n💬 Chat now: ${chatLink(lead.provider)}\n\nAgree the price before anything changes hands. Meet in a public place, check the item or work, and never pay a deposit before you've seen it.\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.customer))}.\n${LIABILITY}${l?.sample ? "\n\n(Sample seller for the demo: this number isn't real.)" : ""}`,
   );
   await tell(
     lead.provider,
-    `✅ *New customer: ${nameOf(to)}*\nLooking for: "${need.text}"\n📍 ${areaName(need.area)} · ⏱ ${WHEN_LABEL[need.when]}\n📞 ${prettyPhone(to)}\n💬 Chat now: ${chatLink(to)}${need.budget ? `\n💵 Budget: ${need.budget}` : ""}\n\n1 credit used. Balance: ${plural(ledger.balance(lead.provider), "credit")}.\n⚖️ ${env.APP_NAME} only connects you. We aren't part of any deal and aren't responsible for it.`,
+    `✅ *New customer: ${nameOf(lead.customer)}*\nAbout: ${need ? `"${need.text}"` : what}${need?.budgetText ? `\n💵 Budget: ${need.budgetText}` : ""}\n📞 ${prettyPhone(lead.customer)}\n💬 Chat now: ${chatLink(lead.customer)}\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.provider))}.\n${LIABILITY}`,
   );
-  if (need.connections >= MAX_CONNECTIONS_PER_NEED) {
-    await closeNeed(need, "CLOSED");
-    await wa.sendText(to, `You now have ${MAX_CONNECTIONS_PER_NEED} contacts for this post, so we've closed it to stop more messages. Type MENU to post something new.`);
+  if (need) {
+    if (need.connections >= MAX_CONNECTIONS_PER_NEED) {
+      await closeNeed(need, "CLOSED");
+      await wa.sendText(lead.customer, `You now have ${MAX_CONNECTIONS_PER_NEED} contacts for this post, so we've closed it to stop more messages. Type MENU to post something new.`);
+      return;
+    }
+    await wa.sendButtons(lead.customer, `Did this find what you needed for "${fit(need.text, 40)}"?`, [
+      { id: `found:yes:${need.id}`, title: "Yes, close my post" },
+      { id: `found:no:${need.id}`, title: "Still looking" },
+    ]);
   }
+}
+
+async function foundIt(u: User, needId: string, yes: boolean): Promise<void> {
+  const need = needs.get(needId);
+  if (!need || need.owner !== u.phone) return didntGetThat(u);
+  if (!yes) return void (await wa.sendText(u.phone, "Okay, your post stays open. More replies will come here."));
+  if (need.status === "OPEN") await closeNeed(need, "CLOSED");
+  track("post_found", u.phone, { category: need.category });
+  await anythingElse(u.phone, `🎉 Great! We've closed ${need.id}, so nobody else gets it. Rate them later in *My posts*.\n\nAnything else we can help you with?`);
 }
 
 /** Closes a need and ends its open leads, returning any held credits. */
@@ -834,10 +1339,29 @@ async function closeNeed(need: Need, status: "CLOSED" | "EXPIRED"): Promise<void
     if (!isOpen(lead)) continue;
     const wasInterested = lead.status === "INTERESTED";
     moveLead(lead, "EXPIRED");
-    if (wasInterested && ledger.release(lead.id)) {
-      await tell(lead.provider, `The post "${fit(need.text, 50)}" has closed. Your held credit is back.`);
+    ledger.release(`${lead.id}:c`);
+    if (ledger.release(lead.id) && wasInterested) await tell(lead.provider, `The post "${fit(need.text, 50)}" has closed. Your held credits are back.`);
+  }
+}
+
+async function setAlert(u: User, needId: string, on: boolean): Promise<void> {
+  const need = needs.get(needId);
+  if (!need || need.owner !== u.phone) return didntGetThat(u);
+  need.alert = on && need.status === "OPEN";
+  track(on ? "alert_opt_in" : "alert_opt_out", u.phone, { category: need.category });
+  if (on) return anythingElse(u.phone, `🔔 Done. We'll message you when a new match for "${fit(need.text, 40)}" is listed. Type STOP any time to turn alerts off.\n\nAnything else?`);
+  return anythingElse(u.phone, "Okay, no alerts for that post. Anything else?");
+}
+
+async function stopAlerts(u: User): Promise<void> {
+  let n = 0;
+  for (const need of needs.values()) {
+    if (need.owner === u.phone && need.alert) {
+      need.alert = false;
+      n += 1;
     }
   }
+  await wa.sendText(u.phone, n ? `🔕 Alerts are off for ${plural(n, "post")}. Type MENU to continue.` : "You have no alerts on. Type MENU to continue.");
 }
 
 async function reportLead(to: string, leadId: string): Promise<void> {
@@ -845,26 +1369,27 @@ async function reportLead(to: string, leadId: string): Promise<void> {
   if (!lead || (lead.customer !== to && lead.provider !== to)) return void (await wa.sendText(to, "That's no longer available."));
   if (lead.reported) return void (await wa.sendText(to, "Thanks, this has already been reported."));
   lead.reported = true;
-  const offer = offers.get(lead.offerId);
-  const need = needs.get(lead.needId);
-  if (to === lead.customer && offer) {
-    offer.strikes += 1;
+  const l = listings.get(lead.offerId);
+  if (to === lead.customer && l) {
+    l.strikes += 1;
     if (lead.status === "INTERESTED") {
       moveLead(lead, "DECLINED");
       ledger.release(lead.id);
+      ledger.release(`${lead.id}:c`);
     }
-    if (offer.strikes >= 3 && offer.active) {
-      offer.active = false;
-      await tell(offer.owner, `Your ${env.APP_NAME} listing "${fit(offer.text, 40)}" has been paused after several reports. Reply here if you think this is a mistake.`);
+    if (l.strikes >= 3 && l.active) {
+      l.active = false;
+      await tell(l.owner, `Your ${env.APP_NAME} listing "${fit(l.title, 40)}" has been paused after several reports. Reply here if you think this is a mistake.`);
     }
-    await wa.sendText(to, `Thanks for telling us. We won't share your number with ${offer.name}, and our team will look into it.`);
+    await wa.sendText(to, `Thanks for telling us. We won't share your number with ${nameOf(lead.provider)}, and our team will look into it.`);
   } else {
     await wa.sendText(to, "Thanks for telling us. Our team will look into it.");
   }
+  track("reported", to, { category: l?.category ?? "" });
   if (env.ADMIN_PHONE) {
     await wa.sendText(
       env.ADMIN_PHONE,
-      `⚠️ *Report* on lead ${lead.id}\nBy: ${to === lead.customer ? "customer" : "provider"} ...${to.slice(-4)}\nProvider: ${offer?.name ?? "?"} (${offer?.id ?? "?"}) · strikes ${offer?.strikes ?? 0}/3${offer && !offer.active ? " · PAUSED" : ""}\nPost: ${need?.id ?? "?"} · ${catName(need?.category ?? "")}`,
+      `⚠️ *Report* on lead ${lead.id}\nBy: ${to === lead.customer ? "buyer" : "seller"} ${nameOf(to)} ${prettyPhone(to)}\nAbout: ${nameOf(lead.provider)} ${prettyPhone(lead.provider)} · ${l?.id ?? "?"} · strikes ${l?.strikes ?? 0}/3${l && !l.active ? " · PAUSED" : ""}`,
     );
   }
 }
@@ -872,17 +1397,17 @@ async function reportLead(to: string, leadId: string): Promise<void> {
 // ---------------------------------------------------------------- my posts & ratings
 
 async function showPosts(u: User): Promise<void> {
-  const mine = [...needs.values()].filter((n) => n.owner === u.phone).sort((a, b) => b.createdAt - a.createdAt).slice(0, 6);
-  const listings = [...offers.values()].filter((o) => o.owner === u.phone).slice(0, 3);
-  if (!mine.length && !listings.length) {
+  const mine = [...needs.values()].filter((n) => n.owner === u.phone).sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
+  const mylist = [...listings.values()].filter((l) => l.owner === u.phone).sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
+  if (!mine.length && !mylist.length) {
     await wa.sendText(u.phone, "You don't have any posts yet.");
-    return showMenu(u, "Main menu");
+    return anythingElse(u.phone);
   }
   const statusWord = { OPEN: "Open", CLOSED: "Closed", EXPIRED: "Expired" };
   await prompt(u, () =>
     wa.sendList(
       u.phone,
-      "Your posts and listings. Tap one to see it, close it or rate someone.",
+      "Your posts and listings. Tap one to see it, close it, mark it as sold or rate someone.",
       "My posts",
       [
         ...mine.map((n) => ({
@@ -890,10 +1415,10 @@ async function showPosts(u: User): Promise<void> {
           title: fit(`🔎 ${n.text}`, 24),
           description: fit(`${statusWord[n.status]} · ${plural(n.connections, "contact")} · ${catName(n.category)}`, 72),
         })),
-        ...listings.map((o) => ({
-          id: `post:offer:${o.id}`,
-          title: fit(`🛠 ${catName(o.category)}`, 24),
-          description: fit(`${o.active ? "Active" : "Paused"} · ${ratingLine(o)}`, 72),
+        ...mylist.map((l) => ({
+          id: `post:list:${l.id}`,
+          title: fit(`🏷️ ${l.kind === "item" ? l.title : catName(l.category)}`, 24),
+          description: fit(`${l.sold ? "Sold" : l.active ? "Live" : "Paused"} · ${priceLabel(l)} · ${badges(l)}`, 72),
         })),
       ],
       "Posts",
@@ -907,7 +1432,6 @@ async function showPost(u: User, type: string, postId: string): Promise<void> {
     if (!need || need.owner !== u.phone) return didntGetThat(u);
     const connected = leadsFor(need.id).filter((l) => l.status === "CONNECTED");
     const unrated = connected.filter((l) => !l.rated);
-    const names = connected.map((l) => offers.get(l.offerId)?.name ?? "?").join(", ");
     const buttons = [
       ...(unrated.length ? [{ id: `rate:${need.id}`, title: "Rate someone" }] : []),
       ...(need.status === "OPEN" ? [{ id: `close:${need.id}`, title: "Close post" }] : []),
@@ -915,22 +1439,41 @@ async function showPost(u: User, type: string, postId: string): Promise<void> {
     ];
     await wa.sendButtons(
       u.phone,
-      `*${need.id}* · ${need.status === "OPEN" ? "Open" : need.status === "CLOSED" ? "Closed" : "Expired"}\n🔎 "${need.text}"\n🛠 ${catName(need.category)} · 📍 ${areaName(need.area)}\n🤝 Contacts: ${connected.length ? names : "none yet"}`,
+      `*${need.id}* · ${need.status === "OPEN" ? "Open" : need.status === "CLOSED" ? "Closed" : "Expired"}\n🔎 "${need.text}"\n🏷️ ${catName(need.category)} · 💵 ${need.budgetText ?? "no budget"}\n🔔 Alerts ${need.alert ? "on" : "off"}\n🤝 Contacts: ${connected.length ? connected.map((l) => nameOf(l.provider)).join(", ") : "none yet"}`,
       buttons,
     );
     return;
   }
-  const offer = offers.get(postId);
-  if (!offer || offer.owner !== u.phone) return didntGetThat(u);
-  const sent = [...leads.values()].filter((l) => l.offerId === offer.id);
+  const l = listings.get(postId);
+  if (!l || l.owner !== u.phone) return didntGetThat(u);
+  const asked = [...leads.values()].filter((x) => x.offerId === l.id);
+  const score = profileScore({ photos: l.photos.length, text: l.text, hasPrice: l.priceCents !== null || Boolean(l.priceText), verified: u.verified });
+  const buttons = [
+    ...(l.kind === "item" && !l.sold ? [{ id: `sold:${l.id}`, title: "Mark as sold" }] : []),
+    ...(!l.sold ? [l.active ? { id: `pause:${l.id}`, title: "Pause" } : { id: `resume:${l.id}`, title: "Turn back on" }] : []),
+    { id: "menu:main", title: "Main menu" },
+  ];
   await wa.sendButtons(
     u.phone,
-    `*${offer.id}* · ${offer.active ? "Active" : "Paused"}\n🛠 ${catName(offer.category)}\n"${offer.text}"\n📍 ${coverage(offer)}\n${ratingLine(offer)}\n📬 ${plural(sent.length, "lead")} received · 💳 ${plural(ledger.balance(u.phone), "credit")}`,
-    [
-      offer.active ? { id: `pause:${offer.id}`, title: "Pause listing" } : { id: `resume:${offer.id}`, title: "Turn back on" },
-      { id: "menu:main", title: "Main menu" },
-    ],
+    `*${l.id}* · ${l.sold ? "Sold" : l.active ? "Live" : "Paused"}\n🏷️ ${l.kind === "item" ? l.title : catName(l.category)} · ${priceLabel(l)}\n${badges(l)}\n📬 ${plural(asked.length, "buyer")} interested · 🤝 ${plural(l.jobs, "swap")}\n📈 Listing score: ${score.score}%${score.tip ? `. ${score.tip}` : ""}`,
+    buttons,
+    l.photos[0] ? { imageUrl: l.photos[0] } : {},
   );
+}
+
+async function markSold(u: User, listingId: string): Promise<void> {
+  const l = listings.get(listingId);
+  if (!l || l.owner !== u.phone) return didntGetThat(u);
+  if (l.sold) return void (await wa.sendText(u.phone, "That's already marked as sold."));
+  l.sold = true;
+  l.active = false;
+  for (const lead of [...leads.values()].filter((x) => x.offerId === l.id && isOpen(x))) {
+    moveLead(lead, "EXPIRED");
+    ledger.release(lead.id);
+    if (ledger.release(`${lead.id}:c`)) await wa.sendText(lead.customer, `Sorry, the ${fit(l.title, 40)} has just been sold. Your ${credits(lead.cost)} are back.`);
+  }
+  track("listing_sold", u.phone, { category: l.category });
+  await anythingElse(u.phone, `🎉 Marked as sold. Buyers won't see the ${fit(l.title, 40)} any more.\n\nAnything else?`);
 }
 
 async function pickWhoToRate(u: User, needId: string): Promise<void> {
@@ -939,31 +1482,18 @@ async function pickWhoToRate(u: User, needId: string): Promise<void> {
   const unrated = leadsFor(need.id).filter((l) => l.status === "CONNECTED" && !l.rated);
   if (!unrated.length) return void (await wa.sendText(u.phone, "You've rated everyone for this post. Thank you!"));
   if (unrated.length === 1 && unrated[0]) return askRatingFor(u, unrated[0].id);
-  await wa.sendList(
-    u.phone,
-    "Who do you want to rate?",
-    "Choose",
-    unrated.map((l) => ({ id: `ratepick:${l.id}`, title: fit(offers.get(l.offerId)?.name ?? "Provider", 24) })),
-    "Contacts",
-  );
+  await wa.sendList(u.phone, "Who do you want to rate?", "Choose", unrated.map((l) => ({ id: `ratepick:${l.id}`, title: fit(nameOf(l.provider), 24) })), "Contacts");
 }
 
 async function askRatingFor(u: User, leadId: string): Promise<void> {
   const lead = leads.get(leadId);
   if (!lead || lead.customer !== u.phone || lead.status !== "CONNECTED") return didntGetThat(u);
   if (lead.rated) return void (await wa.sendText(u.phone, "You've already rated them. Thank you!"));
-  const name = offers.get(lead.offerId)?.name ?? "them";
   await wa.sendList(
     u.phone,
-    `How was ${name}? Your rating helps others choose.`,
+    `How was ${nameOf(lead.provider)}? Your stars help others choose.`,
     "Rate",
-    [
-      { id: `rating:${lead.id}:5`, title: "★★★★★ Excellent" },
-      { id: `rating:${lead.id}:4`, title: "★★★★ Good" },
-      { id: `rating:${lead.id}:3`, title: "★★★ Okay" },
-      { id: `rating:${lead.id}:2`, title: "★★ Poor" },
-      { id: `rating:${lead.id}:1`, title: "★ Bad" },
-    ],
+    [5, 4, 3, 2, 1].map((n) => ({ id: `rating:${lead.id}:${n}`, title: `${"★".repeat(n)} ${["", "Bad", "Poor", "Okay", "Good", "Excellent"][n]}` })),
     "Rating",
   );
 }
@@ -972,13 +1502,14 @@ async function saveRating(u: User, leadId: string, stars: number): Promise<void>
   const lead = leads.get(leadId);
   if (!lead || lead.customer !== u.phone || lead.status !== "CONNECTED" || !Number.isInteger(stars) || stars < 1 || stars > 5) return didntGetThat(u);
   if (lead.rated) return void (await wa.sendText(u.phone, "You've already rated them. Thank you!"));
-  const offer = offers.get(lead.offerId);
-  if (!offer) return;
+  const l = listings.get(lead.offerId);
+  if (!l) return;
   lead.rated = true;
-  offer.ratingSum += stars;
-  offer.ratingCount += 1;
-  await wa.sendText(u.phone, `Thanks! You gave ${offer.name} ${stars}/5.`);
-  await tell(offer.owner, `⭐ ${nameOf(u.phone)} rated you ${stars}/5. Your rating is now ${averageRating(offer).toFixed(1)} from ${plural(offer.ratingCount, "review")}.`);
+  l.ratingSum += stars;
+  l.ratingCount += 1;
+  track("rated", u.phone, { stars, category: l.category });
+  await wa.sendText(u.phone, `Thanks! You gave ${nameOf(l.owner)} ${stars}/5.`);
+  await tell(l.owner, `⭐ ${nameOf(u.phone)} rated you ${stars}/5. Your rating is now ${averageRating(l).toFixed(1)} from ${plural(l.ratingCount, "review")}. ${badges(l)}`);
 }
 
 async function closeMyNeed(u: User, needId: string): Promise<void> {
@@ -989,32 +1520,148 @@ async function closeMyNeed(u: User, needId: string): Promise<void> {
   return showMenu(u, `Closed ${need.id}. You won't get more replies for it.`);
 }
 
-async function toggleOffer(u: User, offerId: string, on: boolean): Promise<void> {
-  const offer = offers.get(offerId);
-  if (!offer || offer.owner !== u.phone) return didntGetThat(u);
-  if (on && offer.strikes >= 3) return void (await wa.sendText(u.phone, "This listing was paused after reports. Reply here and our team will review it."));
-  if (on && !offer.active && activeOffersOf(u.phone).length >= MAX_ACTIVE_OFFERS) {
-    return void (await wa.sendText(u.phone, `You already have ${MAX_ACTIVE_OFFERS} active listings. Pause another one first.`));
+async function toggleListing(u: User, listingId: string, on: boolean): Promise<void> {
+  const l = listings.get(listingId);
+  if (!l || l.owner !== u.phone || l.sold) return didntGetThat(u);
+  if (on && l.strikes >= 3) return void (await wa.sendText(u.phone, "This listing was paused after reports. Reply here and our team will review it."));
+  if (on && !l.active && activeListingsOf(u.phone).length >= MAX_ACTIVE_LISTINGS) {
+    return void (await wa.sendText(u.phone, `You already have ${MAX_ACTIVE_LISTINGS} live listings. Pause another one first.`));
   }
-  offer.active = on;
-  return showMenu(u, on ? `✅ ${offer.id} is back on. New jobs will come to you.` : `⏸ ${offer.id} is paused. You won't get new jobs for it.`);
+  l.active = on;
+  return showMenu(u, on ? `✅ ${l.id} is live again.` : `⏸ ${l.id} is paused. Buyers won't see it.`);
+}
+
+// ---------------------------------------------------------------- sponsored ads
+
+async function showAdvertise(u: User): Promise<void> {
+  const mine = [...ads.values()].filter((a) => a.owner === u.phone);
+  await wa.sendButtons(
+    u.phone,
+    `📣 *Advertise on ${env.APP_NAME}*\n\nYour ad shows as the last card when people search a category you choose. A paint shop can target "Building & painting", an insurer can target "Cars".\n\nYou pay ${credits(AD_TAP_COST)} only when someone taps to contact you. Every ad is checked before it goes live.${mine.length ? `\n\nYour ads: ${mine.map((a) => `${a.id} ${a.status.toLowerCase()} (${plural(a.taps, "tap")})`).join(", ")}` : ""}`,
+    [
+      { id: "adnew", title: "Create an ad" },
+      { id: "menu:main", title: "Main menu" },
+    ],
+  );
+}
+
+async function askAdText(u: User): Promise<void> {
+  u.step = "AD_TEXT";
+  await prompt(u, () => wa.sendText(u.phone, "Write your ad in one line (max 120 characters).\n\nFor example: _Ace Paint Centre: Dulux 20L from $95, free delivery in town_"));
+}
+
+async function addAdPhoto(u: User, mediaId: string): Promise<void> {
+  const link = await savePhoto(mediaId);
+  if (!link) return void (await wa.sendText(u.phone, "Sorry, that photo didn't come through. Please send it again."));
+  u.draft.photos = [link];
+  await wa.sendText(u.phone, "📸 Photo saved.");
+  return askAdWhere(u);
+}
+
+async function askAdWhere(u: User): Promise<void> {
+  u.step = "AD_WHERE";
+  await prompt(u, () =>
+    wa.sendButtons(u.phone, "Where should your ad show?", [
+      { id: "where:city", title: fit(`Only ${cityName(u.city)}`, 20) },
+      { id: "where:any", title: "All of Zimbabwe" },
+    ]),
+  );
+}
+
+async function adSummary(u: User): Promise<void> {
+  u.step = "AD_CONFIRM";
+  const d = u.draft;
+  await prompt(u, () =>
+    wa.sendButtons(
+      u.phone,
+      `*Check your ad*\n\n📣 ${d.text}\n🎯 Shows to people searching: ${catName(d.category ?? "")}\n📍 ${d.anywhere ? "All of Zimbabwe" : cityName(u.city)}\n💳 ${credits(AD_TAP_COST)} per tap. Your balance: ${credits(ledger.balance(u.phone))}`,
+      [
+        { id: "ad:submit", title: "Submit ad" },
+        { id: "ad:cancel", title: "Cancel" },
+      ],
+      d.photos?.[0] ? { imageUrl: d.photos[0] } : {},
+    ),
+  );
+}
+
+async function submitAd(u: User): Promise<void> {
+  const d = u.draft;
+  if (!d.category || !d.text) return showMenu(u, "Something went missing. Let's start again.");
+  const autoLive = isAdmin(u.phone) || !env.ADMIN_PHONE;
+  const ad: Ad = {
+    id: `AD-${++adSeq}`, owner: u.phone, category: d.category, city: d.anywhere ? null : u.city, text: d.text,
+    photo: d.photos?.[0] ?? null, status: autoLive ? "LIVE" : "PENDING", views: 0, taps: 0, createdAt: Date.now(),
+  };
+  ads.set(ad.id, ad);
+  track("ad_created", u.phone, { category: ad.category, auto_live: autoLive });
+  if (autoLive) return anythingElse(u.phone, `✅ Your ad ${ad.id} is live. Make sure you keep credits: each tap uses ${credits(AD_TAP_COST)}.\n\nAnything else?`);
+  await anythingElse(u.phone, `📨 Thanks! Your ad ${ad.id} has been sent for approval. We'll message you when it's live.\n\nAnything else?`);
+  if (env.ADMIN_PHONE) {
+    await wa.sendButtons(
+      env.ADMIN_PHONE,
+      `📣 *New ad to approve* (${ad.id})\nFrom: ${nameOf(u.phone)} ${prettyPhone(u.phone)}\n🎯 ${catName(ad.category)} · 📍 ${ad.city ? cityName(ad.city) : "All of Zimbabwe"}\n\n"${ad.text}"`,
+      [
+        { id: `ad:ok:${ad.id}`, title: "Approve" },
+        { id: `ad:no:${ad.id}`, title: "Reject" },
+      ],
+      ad.photo ? { imageUrl: ad.photo } : {},
+    );
+  }
+}
+
+async function reviewAd(to: string, adId: string, approve: boolean): Promise<void> {
+  if (!isAdmin(to)) return void (await wa.sendText(to, "Sorry, I didn't get that. Type MENU to start over."));
+  const ad = ads.get(adId);
+  if (!ad) return void (await wa.sendText(to, "That ad doesn't exist."));
+  if (ad.status !== "PENDING") return void (await wa.sendText(to, `${ad.id} is already ${ad.status.toLowerCase()}.`));
+  ad.status = approve ? "LIVE" : "REJECTED";
+  track(approve ? "ad_approved" : "ad_rejected", ad.owner, { category: ad.category });
+  await wa.sendText(to, `${approve ? "✅ Approved" : "❌ Rejected"} ${ad.id}.`);
+  await tell(
+    ad.owner,
+    approve
+      ? `✅ Your ad ${ad.id} is live! It shows when people search ${catName(ad.category)}. Each tap uses ${credits(AD_TAP_COST)}; you have ${credits(ledger.balance(ad.owner))}.`
+      : `Sorry, your ad ${ad.id} wasn't approved. Reply here if you'd like to know why.`,
+  );
+}
+
+async function adTapped(u: User, adId: string): Promise<void> {
+  const ad = ads.get(adId);
+  if (!ad || ad.status !== "LIVE") return void (await wa.sendText(u.phone, "Sorry, this offer has ended."));
+  if (ad.owner === u.phone) return void (await wa.sendText(u.phone, "That's your own ad 🙂"));
+  const key = `adtap:${ad.id}:${u.phone}`;
+  const firstTap = !ledger.hasSpent(key);
+  if (firstTap && !ledger.spend(ad.owner, AD_TAP_COST, key)) {
+    ad.status = "PAUSED";
+    await tell(ad.owner, `⏸ Your ad ${ad.id} is paused because you're out of credits. Buy credits and reply here to turn it back on.`);
+    return void (await wa.sendText(u.phone, "Sorry, this offer isn't available right now."));
+  }
+  if (firstTap) {
+    ad.taps += 1;
+    track("sponsored_tap", u.phone, { category: ad.category });
+    await tell(ad.owner, `📣 ${nameOf(u.phone)} tapped your ad and has your number. ${credits(AD_TAP_COST)} used. Balance: ${credits(ledger.balance(ad.owner))}.`);
+  }
+  await wa.sendText(
+    u.phone,
+    `📣 *${nameOf(ad.owner)}*\n${ad.text}\n📞 ${prettyPhone(ad.owner)}\n💬 Chat now: ${chatLink(ad.owner)}\n\n${LIABILITY}${isSample(ad.owner) ? "\n\n(Sample ad for the demo: this number isn't real.)" : ""}`,
+  );
 }
 
 // ---------------------------------------------------------------- credits
 
+async function waitingForPayment(to: string): Promise<void> {
+  await wa.sendText(to, "We're still waiting for your payment. I'll message you as soon as it goes through.");
+}
+
 async function showCredits(u: User): Promise<void> {
-  if (u.step === "BUY_WAIT") return void (await wa.sendText(u.phone, "We're still waiting for your payment. I'll message you as soon as it goes through."));
+  if (u.step === "BUY_WAIT") return waitingForPayment(u.phone);
   u.step = "MENU";
   await prompt(u, () =>
     wa.sendList(
       u.phone,
-      `💳 You have *${plural(ledger.balance(u.phone), "credit")}*.\n\n1 credit = 1 number swap, for buyers and sellers alike. Sellers only use it when the buyer accepts. If they say no, it comes back.`,
+      `💳 You have *${credits(ledger.balance(u.phone))}*.\n\nA number swap uses 1 credit from each side (3 for cars and houses, 2 for venues). Held credits come back if a swap doesn't happen. Ads use ${credits(AD_TAP_COST)} per tap.`,
       "Buy credits",
-      BUNDLES.map((b) => ({
-        id: `buy:${b.key}`,
-        title: `${plural(b.credits, "credit")} · ${formatUsd(b.cents)}`,
-        description: `${formatUsd(Math.round(b.cents / b.credits))} per number swap`,
-      })),
+      BUNDLES.map((b) => ({ id: `buy:${b.key}`, title: `${credits(b.credits)} · ${formatUsd(b.cents)}`, description: `${formatUsd(Math.round(b.cents / b.credits))} per credit` })),
       "Bundles",
     ),
   );
@@ -1028,7 +1675,7 @@ async function startBuy(u: User, bundleKey: string): Promise<void> {
   const own = toLocalNumber(u.phone);
   if (!networkMatches(own, "ecocash")) return askOtherNumber(u);
   await prompt(u, () =>
-    wa.sendButtons(u.phone, `Pay *${formatUsd(bundle.cents)}* for ${plural(bundle.credits, "credit")} with EcoCash from ${formatLocalNumber(own)}?`, [
+    wa.sendButtons(u.phone, `Pay *${formatUsd(bundle.cents)}* for ${credits(bundle.credits)} with EcoCash from ${formatLocalNumber(own)}?`, [
       { id: "pay:self", title: "Yes, this number" },
       { id: "pay:other", title: "Another number" },
       { id: "menu:main", title: "Cancel" },
@@ -1045,14 +1692,7 @@ async function beginPurchase(u: User, payer: string): Promise<void> {
   const bundle = getBundle(u.draft.bundle ?? "");
   if (!bundle) return showMenu(u, "Something went missing. Let's start again.");
   const purchase: Purchase = {
-    id: `P-${++purchaseSeq}`,
-    phone: u.phone,
-    credits: bundle.credits,
-    cents: bundle.cents,
-    status: "PENDING",
-    pollUrl: null,
-    simulated: false,
-    startedAt: Date.now(),
+    id: `P-${++purchaseSeq}`, phone: u.phone, credits: bundle.credits, cents: bundle.cents, status: "PENDING", pollUrl: null, simulated: false, startedAt: Date.now(),
   };
   const result = await startPayment(purchase.id, purchase.id, `${env.APP_NAME} ${bundle.credits} credits`, bundle.cents, payer, "ecocash");
   if (!result.ok) {
@@ -1100,23 +1740,28 @@ async function purchasePaid(p: Purchase): Promise<void> {
   p.status = "PAID";
   ledger.purchase(p.phone, p.credits, p.id);
   console.log(`[PAY] ${p.id} paid (${p.credits} credits)`);
+  track("credits_bought", p.phone, { credits: p.credits, cents: p.cents });
   const u = users.get(p.phone);
   if (u) {
     u.step = "MENU";
     u.purchaseId = null;
     u.reprompt = null;
   }
-  await wa.sendText(p.phone, `✅ Payment received. +${plural(p.credits, "credit")}.\nBalance: *${plural(ledger.balance(p.phone), "credit")}*.`);
-  const waiting = u?.pendingLeadId;
-  if (u && waiting) {
-    u.pendingLeadId = null;
-    if (leads.get(waiting)?.status === "OFFERED") await providerResponds(p.phone, waiting, true);
+  await wa.sendText(p.phone, `✅ Payment received. +${credits(p.credits)}.\nBalance: *${credits(ledger.balance(p.phone))}*.`);
+  if (!u) return;
+  // Carry on with whatever was waiting for credits.
+  const lead = u.pendingLeadId ? leads.get(u.pendingLeadId) : undefined;
+  u.pendingLeadId = null;
+  if (lead?.status === "OFFERED") {
+    if (lead.origin === "card") return sellerResponds(p.phone, lead.id, true);
+    return providerResponds(u, lead.id, true);
   }
-  const swap = u?.pendingConnId;
-  if (u && swap) {
-    u.pendingConnId = null;
-    if (leads.get(swap)?.status === "INTERESTED") await customerResponds(p.phone, swap, true);
-  }
+  const conn = u.pendingConnId;
+  u.pendingConnId = null;
+  if (conn && leads.get(conn)?.status === "INTERESTED") return customerResponds(p.phone, conn, true);
+  const card = u.pendingCard;
+  u.pendingCard = null;
+  if (card) return buyerInterested(u, card.listingId, card.needId);
 }
 
 async function purchaseFailed(p: Purchase, reason: string): Promise<void> {
@@ -1135,14 +1780,86 @@ async function purchaseFailed(p: Purchase, reason: string): Promise<void> {
 
 // ---------------------------------------------------------------- admin
 
+/** "0771234567" / "+263 77 123 4567" → "263771234567". */
+function toIntl(input: string): string | null {
+  const d = input.replace(/\D/g, "");
+  if (/^2637\d{8}$/.test(d)) return d;
+  if (/^07\d{8}$/.test(d)) return `263${d.slice(1)}`;
+  return null;
+}
+
+async function adminCommand(to: string, text: string): Promise<void> {
+  const [cmd = "", arg1 = "", arg2 = ""] = text.trim().split(/\s+/);
+  switch (cmd.toLowerCase()) {
+    case "stats":
+      return sendStats(to);
+    case "lookup":
+      return lookup(to, arg1.toUpperCase());
+    case "grant": {
+      const phone = toIntl(arg1);
+      const n = Number(arg2);
+      if (!phone || !Number.isInteger(n) || n <= 0 || n > 1000) return void (await wa.sendText(to, "Use: GRANT 0771234567 5"));
+      ledger.grant(phone, n, `admin:${Date.now()}:${phone}`);
+      await wa.sendText(to, `✅ Gave ${credits(n)} to ${nameOf(phone)} ${prettyPhone(phone)}. Balance: ${ledger.balance(phone)}.`);
+      await tell(phone, `🎁 You received ${credits(n)} from ${env.APP_NAME}. Balance: ${credits(ledger.balance(phone))}.`);
+      return;
+    }
+    case "verify": {
+      const phone = toIntl(arg1);
+      const u = phone ? users.get(phone) : undefined;
+      if (!phone || !u) return void (await wa.sendText(to, "Use: VERIFY 0771234567 (they must have messaged the bot first)."));
+      u.verified = true;
+      await wa.sendText(to, `✅ ${nameOf(phone)} is now verified.`);
+      await tell(phone, `✅ You're now a verified seller on ${env.APP_NAME}. Your listings show the ✅ badge.`);
+      return;
+    }
+    case "ads": {
+      const pending = [...ads.values()].filter((a) => a.status === "PENDING");
+      if (!pending.length) return void (await wa.sendText(to, "No ads waiting for approval."));
+      for (const ad of pending) {
+        await wa.sendButtons(to, `📣 ${ad.id} from ${nameOf(ad.owner)}\n🎯 ${catName(ad.category)}\n"${ad.text}"`, [
+          { id: `ad:ok:${ad.id}`, title: "Approve" },
+          { id: `ad:no:${ad.id}`, title: "Reject" },
+        ], ad.photo ? { imageUrl: ad.photo } : {});
+      }
+    }
+  }
+}
+
+async function lookup(to: string, id: string): Promise<void> {
+  const person = (phone: string) => `${nameOf(phone)} ${prettyPhone(phone)}`;
+  const need = needs.get(id);
+  if (need) {
+    const ls = leadsFor(need.id);
+    return void (await wa.sendText(
+      to,
+      `🔎 *${need.id}* · ${need.status}\nBy: ${person(need.owner)}\n"${need.text}" · ${catName(need.category)} · 💵 ${need.budgetText ?? "-"}\n\n${ls.map((l) => `${l.id} ${l.status}: ${person(l.provider)}${l.quote ? ` · "${l.quote}"` : ""}`).join("\n") || "No leads yet"}`,
+    ));
+  }
+  const l = listings.get(id);
+  if (l) {
+    const ls = [...leads.values()].filter((x) => x.offerId === l.id);
+    return void (await wa.sendText(
+      to,
+      `🏷️ *${l.id}* · ${l.sold ? "SOLD" : l.active ? "LIVE" : "PAUSED"}\nBy: ${person(l.owner)}\n${l.title} · ${priceLabel(l)} · strikes ${l.strikes}\n\n${ls.map((x) => `${x.id} ${x.status}: ${person(x.customer)}`).join("\n") || "No buyers yet"}`,
+    ));
+  }
+  const lead = leads.get(id);
+  if (lead) return void (await wa.sendText(to, `🤝 *${lead.id}* · ${lead.status} (${lead.origin})\nBuyer: ${person(lead.customer)}\nSeller: ${person(lead.provider)}\nCost: ${credits(lead.cost)} each`));
+  await wa.sendText(to, "Not found. Use a post (N-1001), listing (O-501) or lead (L1) number.");
+}
+
 async function sendStats(to: string): Promise<void> {
   const all = [...leads.values()];
   const count = (s: Lead["status"]) => all.filter((l) => l.status === s).length;
   const paid = [...purchases.values()].filter((p) => p.status === "PAID");
-  const real = [...offers.values()].filter((o) => !o.sample);
+  const real = [...listings.values()].filter((l) => !l.sample);
+  const top = new Map<string, number>();
+  for (const n of needs.values()) top.set(n.category, (top.get(n.category) ?? 0) + 1);
+  const topText = [...top.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${catName(k)} (${v})`).join(", ");
   await wa.sendText(
     to,
-    `📊 *${env.APP_NAME} today*\n👥 People: ${users.size}\n🔎 Open posts: ${[...needs.values()].filter((n) => n.status === "OPEN").length} of ${needs.size}\n🛠 Real listings: ${real.filter((o) => o.active).length} active (${real.length} total)\n📬 Leads sent: ${all.length}\n🙋 Interested: ${count("INTERESTED")} · 🤝 Connected: ${count("CONNECTED")} · ✋ Declined: ${count("DECLINED")}\n💳 Credits sold: ${paid.reduce((s, p) => s + p.credits, 0)} (${formatUsd(paid.reduce((s, p) => s + p.cents, 0))})`,
+    `📊 *${env.APP_NAME} today*\n👥 People: ${[...users.keys()].filter((p) => !isSample(p)).length}\n🔎 Posts: ${needs.size} (${[...needs.values()].filter((n) => n.status === "OPEN").length} open)\n🔥 Top searches: ${topText || "none yet"}\n🏷️ Real listings: ${real.filter((l) => l.active && !l.sold).length} live, ${real.filter((l) => l.sold).length} sold\n📬 Leads: ${all.length} · 🙋 Waiting: ${count("OFFERED") + count("INTERESTED")} · 🤝 Swapped: ${count("CONNECTED")}\n📣 Ads: ${[...ads.values()].filter((a) => a.status === "LIVE").length} live, ${[...ads.values()].filter((a) => a.status === "PENDING").length} waiting, ${[...ads.values()].reduce((s, a) => s + a.taps, 0)} taps\n💳 Credits sold: ${paid.reduce((s, p) => s + p.credits, 0)} (${formatUsd(paid.reduce((s, p) => s + p.cents, 0))})\n\nAdmin commands: STATS · LOOKUP N-1001 · GRANT 0771234567 5 · VERIFY 0771234567 · ADS`,
   );
 }
 
@@ -1152,15 +1869,13 @@ setInterval(() => {
   const now = Date.now();
   for (const lead of leads.values()) {
     if (!isStale(lead, now)) continue;
-    const wasInterested = lead.status === "INTERESTED";
     moveLead(lead, "EXPIRED", now);
-    if (wasInterested && ledger.release(lead.id)) void tell(lead.provider, "A customer didn't reply in 48 hours, so your held credit is back.");
+    if (ledger.release(`${lead.id}:c`)) void wa.sendText(lead.customer, "A seller didn't reply in 48 hours, so your held credits are back.");
+    if (ledger.release(lead.id)) void tell(lead.provider, "A customer didn't reply in 48 hours, so your held credits are back.");
   }
   for (const need of needs.values()) {
     if (need.status === "OPEN" && now - need.createdAt > NEED_TTL_MS) {
-      void closeNeed(need, "EXPIRED").then(() =>
-        wa.sendText(need.owner, `Your post "${fit(need.text, 50)}" has expired after 7 days. Type MENU to post it again.`),
-      );
+      void closeNeed(need, "EXPIRED").then(() => wa.sendText(need.owner, `Your post "${fit(need.text, 50)}" has expired after 7 days. Type MENU to post it again.`));
     }
   }
 }, 60 * 1000).unref();

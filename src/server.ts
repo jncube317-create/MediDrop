@@ -1,7 +1,10 @@
 import Fastify from "fastify";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { env, paynowConfigured } from "./env";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { handleIncoming, confirmPurchase, type Incoming } from "./bot";
+import { MEDIA_DIR, SAFE_FILE } from "./media";
 
 const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 });
 
@@ -47,6 +50,7 @@ interface WaMessage {
   text?: { body?: string };
   interactive?: { button_reply?: { id: string }; list_reply?: { id: string } };
   button?: { payload?: string };
+  image?: { id?: string };
 }
 
 function toIncoming(msg: WaMessage): Incoming {
@@ -54,6 +58,7 @@ function toIncoming(msg: WaMessage): Incoming {
   const replyId = msg.interactive?.button_reply?.id ?? msg.interactive?.list_reply?.id;
   if (msg.type === "interactive" && replyId) return { from: msg.from, kind: "reply", id: replyId };
   if (msg.type === "button" && msg.button?.payload) return { from: msg.from, kind: "reply", id: msg.button.payload };
+  if (msg.type === "image" && msg.image?.id) return { from: msg.from, kind: "image", mediaId: msg.image.id };
   return { from: msg.from, kind: "other" };
 }
 
@@ -84,6 +89,27 @@ async function processWebhook(body: unknown): Promise<void> {
 }
 
 app.get("/", async () => ({ app: `${env.APP_NAME} demo`, status: "running" }));
+
+// Demo listing photos (public/demo) and photos people send the bot (MEDIA_DIR).
+const DEMO_DIR = join(process.cwd(), "public", "demo");
+app.get("/img/:file", async (req, reply) => {
+  const file = (req.params as { file: string }).file;
+  if (!/^[a-z0-9-]+\.jpg$/.test(file)) return reply.code(404).send();
+  try {
+    return reply.type("image/jpeg").header("Cache-Control", "public, max-age=86400").send(await readFile(join(DEMO_DIR, file)));
+  } catch {
+    return reply.code(404).send();
+  }
+});
+app.get("/media/:file", async (req, reply) => {
+  const file = (req.params as { file: string }).file;
+  if (!SAFE_FILE.test(file)) return reply.code(404).send();
+  try {
+    return reply.type("image/jpeg").header("Cache-Control", "public, max-age=86400").send(await readFile(join(MEDIA_DIR, file)));
+  } catch {
+    return reply.code(404).send();
+  }
+});
 app.get("/health", async () => ({ ok: true, app: env.APP_NAME, paynow: paynowConfigured ? "test mode" : "simulated" }));
 
 // Meta calls this once when you click "Verify and save".
@@ -122,7 +148,8 @@ app
     console.log(`Payments: ${paynowConfigured ? "Paynow TEST MODE" : "SIMULATED (Paynow keys not set)"}`);
     if (!env.WA_APP_SECRET) console.warn("⚠️ WA_APP_SECRET not set: webhook signatures are NOT being checked. Add it before go-live.");
     if (!env.PUBLIC_URL) console.warn("⚠️ No public URL yet: generate a domain in Railway → Settings → Networking (needed for Paynow).");
-    console.log(`Sample providers: ${env.SAMPLE_PROVIDERS ? "ON (one-phone demo)" : "OFF"}`);
+    console.log(`Sample listings and ads: ${env.SAMPLE_PROVIDERS ? "ON (demo)" : "OFF"}`);
+    console.log(`Analytics: ${env.POSTHOG_KEY ? `PostHog (${env.POSTHOG_HOST})` : "off (no POSTHOG_KEY)"}`);
   })
   .catch((err) => {
     console.error(err);

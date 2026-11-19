@@ -27,18 +27,22 @@ export const env = {
   GRAPH_API_VERSION: optional("GRAPH_API_VERSION") || "v23.0",
   GRAPH_BASE_URL: optional("GRAPH_BASE_URL") || "https://graph.facebook.com", // only changed for local testing
   APP_NAME: optional("APP_NAME") || "Scoutly",
-  CITY: optional("CITY") || "Bulawayo",
   // Optional: gets reports and can type STATS. Can also use the bot normally.
   // Falls back to the Greens STAFF_PHONE so the Greens Railway service works unchanged.
   ADMIN_PHONE: digitsOnly(optional("ADMIN_PHONE") || optional("STAFF_PHONE")),
   PUBLIC_URL: optional("PUBLIC_URL") || (railwayDomain ? `https://${railwayDomain}` : ""),
-  // Sample providers reply automatically so a one-phone demo works. Set false for real use.
+  // Sample listings, providers and ads so a one-phone demo works. Set false for real use.
   SAMPLE_PROVIDERS: optional("SAMPLE_PROVIDERS").toLowerCase() !== "false",
   SAMPLE_REPLY_SECONDS: Number(optional("SAMPLE_REPLY_SECONDS") || "8"),
   PAYNOW_INTEGRATION_ID: optional("PAYNOW_INTEGRATION_ID"),
   PAYNOW_INTEGRATION_KEY: optional("PAYNOW_INTEGRATION_KEY"),
   PAYNOW_AUTH_EMAIL: optional("PAYNOW_AUTH_EMAIL"),
   PAYNOW_PAY_PHONE: optional("PAYNOW_PAY_PHONE"),
+  // Optional PostHog analytics (EU cloud by default). No key = no tracking.
+  POSTHOG_KEY: optional("POSTHOG_KEY"),
+  POSTHOG_HOST: optional("POSTHOG_HOST") || "https://eu.i.posthog.com",
+  ANALYTICS_SALT: optional("ANALYTICS_SALT") || "scoutly",
+  MEDIA_DIR: optional("MEDIA_DIR") || "/tmp/scoutly-media",
   // Demo only: seconds before a simulated payment confirms.
   SIMULATED_PAY_SECONDS: Number(optional("SIMULATED_PAY_SECONDS") || "6"),
 };
