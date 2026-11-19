@@ -124,7 +124,7 @@ function option(msgs: Sent[], to: string, re: RegExp): string {
   return "";
 }
 
-async function onboard(phone: string, name: string): Promise<Sent[]> {
+async function onboard(phone: string, name: string, role: "buy" | "sell" = "buy"): Promise<Sent[]> {
   let r = await send(phone, { text: "hi" });
   check(has(r, phone, /consent:yes/) && has(r, phone, /no illegal goods/) && has(r, phone, /aren't responsible/), `${name}: consent shows the rules and no-liability clause`);
   await send(phone, { reply: "consent:yes" });
@@ -132,6 +132,26 @@ async function onboard(phone: string, name: string): Promise<Sent[]> {
   check(has(r, phone, /city:byo/), `${name}: asks for their town`);
   r = await send(phone, { reply: "city:byo" });
   check(has(r, phone, /You have 3 free credits/), `${name}: 3 free credits on sign-up`);
+  check(has(r, phone, /role:buy/) && has(r, phone, /role:sell/) && has(r, phone, /role:both/), `${name}: asked whether they're buying or selling`);
+  if (role === "buy") {
+    r = await send(phone, { reply: "role:buy" });
+    check(has(r, phone, /kind:item/), `${name}: a buyer goes straight to finding something`);
+    return send(phone, { text: "MENU" });
+  }
+  r = await send(phone, { reply: "role:sell" });
+  check(has(r, phone, /set up your seller profile/) && has(r, phone, /Step 1 of 3/) && has(r, phone, /prof:usename/), `${name}: a seller starts their profile`);
+  r = await send(phone, { reply: "prof:usename" });
+  check(has(r, phone, /Step 2 of 3/), `${name}: profile asks what they sell`);
+  r = await send(phone, { text: "short" });
+  check(has(r, phone, /at least one full sentence/), `${name}: too-short description is refused`);
+  r = await send(phone, { text: "Appliances and painting. Bulawayo, 5 years' experience, fair prices." });
+  check(has(r, phone, /Step 3 of 3[\s\S]*profile photo/), `${name}: profile asks for a photo`);
+  r = await send(phone, { text: "no photo" });
+  check(has(r, phone, /profile photo is needed before you can sell/), `${name}: the photo is required`);
+  r = await send(phone, { image: "media-9" }, 700);
+  check(has(r, phone, /\[photo [a-f0-9-]{36}\.jpg\][\s\S]*This is what buyers will see[\s\S]*\*Joe\*[\s\S]*New seller[\s\S]*Appliances and painting/) && has(r, phone, /prof:ok/), `${name}: profile preview shows the photo, name and description`);
+  r = await send(phone, { reply: "prof:ok" });
+  check(has(r, phone, /seller profile is ready[\s\S]*first item or service/) && has(r, phone, /kind:item/), `${name}: profile saved, straight into listing`);
   return r;
 }
 
@@ -212,12 +232,15 @@ async function main(): Promise<void> {
 
     // ---- a seller lists a fridge with a photo; a buyer with alerts on gets it straight away
     await onboard(BUYER2, "Rudo");
+    r = await send(BUYER2, { reply: "menu:sell" });
+    check(has(r, BUYER2, /Before you list, let's set up your seller profile/), "a buyer who tries to sell is asked for a profile first");
+    await send(BUYER2, { text: "MENU" });
     r = await post(BUYER2, { text: "fridge", kind: "item", cat: "appliances", budget: "$350", when: "flexible" });
     check(has(r, BUYER2, /\[photo fridge\.jpg\][\s\S]*Defy combi fridge[\s\S]*\$520 · New/), "one match comes as a single picture card (new Defy fridge)");
     r = await send(BUYER2, { reply: "alert:on:N-1002" });
     check(has(r, BUYER2, /We'll message you when a new match/), "alerts are opt-in");
 
-    await onboard(PROVIDER, "Joe");
+    await onboard(PROVIDER, "Joe", "sell");
     await send(PROVIDER, { reply: "menu:sell" });
     r = await send(PROVIDER, { reply: "kind:item" });
     check(has(r, PROVIDER, /cat:appliances/), "seller picks an item category");

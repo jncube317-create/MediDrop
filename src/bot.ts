@@ -57,7 +57,8 @@ export type Incoming =
 type Mode = "find" | "sell" | "ad";
 
 type Step =
-  | "ASK_CONSENT" | "ASK_NAME" | "ASK_CITY"
+  | "ASK_CONSENT" | "ASK_NAME" | "ASK_CITY" | "ASK_ROLE"
+  | "PROF_NAME" | "PROF_ABOUT" | "PROF_PHOTO" | "PROF_CONFIRM"
   | "MENU"
   | "CAT_KIND" | "CAT_PICK"
   | "FIND_TEXT" | "FIND_BUDGET" | "FIND_WHEN" | "FIND_DATE" | "FIND_WHERE" | "FIND_CONFIRM"
@@ -83,11 +84,20 @@ interface Draft {
   photos?: string[];
   nationwide?: boolean;
   bundle?: string;
+  profile?: Partial<Profile>;
+}
+
+/** What buyers see about a seller or service provider. */
+interface Profile {
+  name: string; // business or trading name
+  about: string; // what they sell or offer
+  photo: string; // logo, shop front or a clear photo of them or their work
 }
 
 interface User {
   phone: string;
   name: string | null;
+  profile: Profile | null;
   city: string | null;
   verified: boolean;
   step: Step;
@@ -184,14 +194,14 @@ let purchaseSeq = 100;
 const DRAFT_TIMEOUT_MS = 30 * 60 * 1000;
 const NEED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PAYMENT_TIMEOUT_MS = 10 * 60 * 1000;
-const NOT_DRAFT: Step[] = ["ASK_CONSENT", "ASK_NAME", "ASK_CITY", "MENU", "BUY_WAIT"];
+const NOT_DRAFT: Step[] = ["ASK_CONSENT", "ASK_NAME", "ASK_CITY", "ASK_ROLE", "MENU", "BUY_WAIT"];
 const LIABILITY = `⚖️ ${env.APP_NAME} only connects you. We aren't part of any deal and aren't responsible for it.`;
 
 // ---------------------------------------------------------------- demo data
 
 function newUser(phone: string): User {
   return {
-    phone, name: null, city: null, verified: false, step: "ASK_CONSENT", draft: {}, changingCity: false,
+    phone, name: null, profile: null, city: null, verified: false, step: "ASK_CONSENT", draft: {}, changingCity: false,
     pendingLeadId: null, pendingConnId: null, pendingCard: null, quoteLeadId: null, purchaseId: null,
     updatedAt: Date.now(), reprompt: null,
   };
@@ -235,7 +245,7 @@ function user(phone: string): { u: User; timedOut: boolean } {
 
 const textOf = (m: Incoming) => (m.kind === "text" ? m.text.trim() : "");
 const replyId = (m: Incoming) => (m.kind === "reply" ? m.id : "");
-const nameOf = (phone: string) => users.get(phone)?.name ?? "Someone";
+const nameOf = (phone: string) => users.get(phone)?.profile?.name ?? users.get(phone)?.name ?? "Someone";
 const cityName = (key: string | null) => (key ? getCity(key)?.name ?? key : "your town");
 const catName = (key: string) => getCategory(key)?.name ?? key;
 const costOf = (category: string) => getCategory(category)?.swapCost ?? 1;
@@ -367,12 +377,24 @@ async function conversation(m: Incoming): Promise<void> {
     if (first) {
       ledger.welcome(u.phone, WELCOME_CREDITS);
       track("signed_up", to, { city: city.key });
-      return showMenu(
-        u,
-        `Welcome to ${env.APP_NAME}, ${u.name} 👋\n\nLooking for something? Tell us and we'll show you who's selling it. Selling something or offering a service? List it once and buyers come to you.\n\n🎁 You have ${WELCOME_CREDITS} free credits.`,
-      );
+      return askRole(u);
     }
     return showMenu(u, `📍 Your town is now ${city.name}.`);
+  }
+
+  if (u.step === "ASK_ROLE") {
+    if (id === "role:buy") {
+      track("role_chosen", to, { role: "buyer" });
+      u.draft = {};
+      await wa.sendText(to, "Great 👍 Let's find it.");
+      return askKind(u, "find");
+    }
+    if (id === "role:sell" || id === "role:both") {
+      track("role_chosen", to, { role: id === "role:sell" ? "seller" : "both" });
+      return startProfile(u, "Great 👍 First, let's set up your seller profile. This is what buyers see before they swap numbers with you, so a clean profile gets you more deals.");
+    }
+    if (/^(menu|hi|hello|hey|start)$/i.test(text)) return showMenu(u, `Hi ${u.name} 👋`);
+    return didntGetThat(u);
   }
 
   // ---- words that work anywhere (any capitals)
@@ -387,6 +409,7 @@ async function conversation(m: Incoming): Promise<void> {
 
   // ---- photos
   if (m.kind === "image") {
+    if (u.step === "PROF_PHOTO") return addProfilePhoto(u, m.mediaId);
     if (u.step === "SELL_PHOTOS") return addListingPhoto(u, m.mediaId);
     if (u.step === "AD_PHOTO") return addAdPhoto(u, m.mediaId);
     return void (await wa.sendText(to, "Nice photo! To show it to buyers, list your item: type MENU → Sell or offer."));
@@ -436,6 +459,7 @@ async function conversation(m: Incoming): Promise<void> {
   if (u.step === "BUY_WAIT") return waitingForPayment(to);
 
   if (id.startsWith("buy:")) return startBuy(u, id.slice(4));
+  if (id === "prof:redo") return startProfile(u, "Okay, let's update your profile.");
   if (id === "adnew") return askKind(u, "ad");
   if (id.startsWith("menu:")) {
     u.draft = {};
@@ -448,6 +472,8 @@ async function conversation(m: Incoming): Promise<void> {
         return startSell(u);
       case "menu:posts":
         return showPosts(u);
+      case "menu:profile":
+        return showProfile(u);
       case "menu:credits":
         return showCredits(u);
       case "menu:ads":
@@ -468,6 +494,30 @@ async function conversation(m: Incoming): Promise<void> {
         u.draft = { text: clean(text, 300) };
         return askKind(u, "find");
       }
+      return didntGetThat(u);
+    }
+
+    // ---- seller profile
+    case "PROF_NAME": {
+      const name = id === "prof:usename" ? u.name ?? "" : text;
+      if (name.length < 2) return didntGetThat(u);
+      if (await refusedAsBanned(u, name)) return;
+      u.draft.profile = { ...u.draft.profile, name: clean(name, 40) };
+      return askProfileAbout(u);
+    }
+    case "PROF_ABOUT": {
+      if (text.length < 15) return void (await wa.sendText(to, "Please write a bit more (at least one full sentence), so buyers know what you do."));
+      if (await refusedAsBanned(u, text)) return;
+      u.draft.profile = { ...u.draft.profile, about: clean(text, 200) };
+      return askProfilePhoto(u);
+    }
+    case "PROF_PHOTO": {
+      return void (await wa.sendText(to, "Please send a *photo* (tap 📎 or 📷). A profile photo is needed before you can sell. Type MENU to do it later."));
+    }
+    case "PROF_CONFIRM": {
+      if (id === "prof:ok") return saveProfile(u);
+      if (id === "prof:photo") return askProfilePhoto(u);
+      if (id === "prof:edit") return startProfile(u, "Okay, let's go through it again.");
       return didntGetThat(u);
     }
 
@@ -660,6 +710,103 @@ async function askCity(u: User): Promise<void> {
   );
 }
 
+// ---------------------------------------------------------------- buyer or seller + seller profile
+
+async function askRole(u: User): Promise<void> {
+  u.step = "ASK_ROLE";
+  await prompt(u, () =>
+    wa.sendButtons(
+      u.phone,
+      `Welcome to ${env.APP_NAME}, ${u.name} 👋 🎁 You have ${WELCOME_CREDITS} free credits.\n\nWhat brings you here?\n\n🔎 *Buying:* tell us what you need and see who's selling it.\n🏷️ *Selling:* list items or services once and buyers come to you.`,
+      [
+        { id: "role:buy", title: "🔎 I'm buying" },
+        { id: "role:sell", title: "🏷️ I'm selling" },
+        { id: "role:both", title: "Both" },
+      ],
+    ),
+  );
+}
+
+async function startProfile(u: User, intro: string): Promise<void> {
+  u.draft = { profile: {} };
+  u.step = "PROF_NAME";
+  const buttons = u.name ? [{ id: "prof:usename", title: fit(`Use "${u.name}"`, 20) }] : [];
+  await wa.sendText(u.phone, intro);
+  await prompt(u, () =>
+    buttons.length
+      ? wa.sendButtons(u.phone, "*Step 1 of 3:* What name should buyers see?\n\nType your business name (e.g. _Sipho Painters_) or tap below to use your own name.", buttons)
+      : wa.sendText(u.phone, "*Step 1 of 3:* What name should buyers see? Type your business name or your own name."),
+  );
+}
+
+async function askProfileAbout(u: User): Promise<void> {
+  u.step = "PROF_ABOUT";
+  await prompt(u, () =>
+    wa.sendText(
+      u.phone,
+      "*Step 2 of 3:* In one or two sentences, what do you sell or offer?\n\nFor example: _Used cars and pickups, all papers in order. Based in Bulawayo, delivery anywhere in Zim._",
+    ),
+  );
+}
+
+async function askProfilePhoto(u: User): Promise<void> {
+  u.step = "PROF_PHOTO";
+  await prompt(u, () =>
+    wa.sendText(
+      u.phone,
+      "*Step 3 of 3:* Send a profile photo 📸\n\nUse your logo, your shop front, or a clear photo of you or your work. Profiles with a real photo get far more swaps.\n\nTap 📎 or 📷 to send it.",
+    ),
+  );
+}
+
+async function addProfilePhoto(u: User, mediaId: string): Promise<void> {
+  const link = await savePhoto(mediaId);
+  if (!link) return void (await wa.sendText(u.phone, "Sorry, that photo didn't come through. Please send it again."));
+  u.draft.profile = { ...u.draft.profile, photo: link };
+  return previewProfile(u);
+}
+
+function profileCard(u: User, p: Profile): string {
+  const stars = u.verified ? "✅ Verified" : "🆕 New seller";
+  return `*${p.name}*\n📍 ${cityName(u.city)} · ${stars}\n\n${p.about}`;
+}
+
+async function previewProfile(u: User): Promise<void> {
+  const p = u.draft.profile;
+  if (!p?.name || !p.about || !p.photo) return startProfile(u, "Let's finish your profile.");
+  u.step = "PROF_CONFIRM";
+  const full: Profile = { name: p.name, about: p.about, photo: p.photo };
+  await prompt(u, () =>
+    wa.sendButtons(u.phone, `This is what buyers will see:\n\n${profileCard(u, full)}`, [
+      { id: "prof:ok", title: "✅ Looks good" },
+      { id: "prof:photo", title: "Change photo" },
+      { id: "prof:edit", title: "Edit details" },
+    ], { imageUrl: full.photo }),
+  );
+}
+
+async function saveProfile(u: User): Promise<void> {
+  const p = u.draft.profile;
+  if (!p?.name || !p.about || !p.photo) return startProfile(u, "Let's finish your profile.");
+  const first = u.profile === null;
+  u.profile = { name: p.name, about: p.about, photo: p.photo };
+  u.draft = {};
+  track("profile_saved", u.phone, { first });
+  if (!first) return showMenu(u, "✅ Profile updated.");
+  await wa.sendText(u.phone, "✅ Your seller profile is ready. Now let's list your first item or service.");
+  return startSell(u);
+}
+
+async function showProfile(u: User): Promise<void> {
+  if (!u.profile) return startProfile(u, "You don't have a seller profile yet. Let's set one up. It takes 1 minute.");
+  u.step = "MENU";
+  await wa.sendButtons(u.phone, `Your seller profile:\n\n${profileCard(u, u.profile)}`, [
+    { id: "menu:sell", title: "🏷️ List something" },
+    { id: "prof:redo", title: "Edit profile" },
+    { id: "menu:main", title: "Main menu" },
+  ], { imageUrl: u.profile.photo });
+}
+
 async function showMenu(u: User, greeting: string): Promise<void> {
   u.step = "MENU";
   u.draft = {};
@@ -672,6 +819,7 @@ async function showMenu(u: User, greeting: string): Promise<void> {
         { id: "menu:find", title: "🔎 Find something", description: "Items or services. See prices side by side." },
         { id: "menu:sell", title: "🏷️ Sell or offer", description: "List an item or service once. Buyers come to you." },
         { id: "menu:posts", title: "My posts", description: "See, close or mark as sold. Rate people." },
+        { id: "menu:profile", title: "🪪 My seller profile", description: u.profile ? `${fit(u.profile.name, 40)} · tap to view or edit` : "Set it up before you sell." },
         { id: "menu:credits", title: "My credits", description: `Balance: ${credits(ledger.balance(u.phone))}` },
         { id: "menu:ads", title: "📣 Advertise", description: "Show your business in search results." },
         { id: "menu:city", title: "Change my town", description: `Now: ${cityName(u.city)}` },
@@ -915,6 +1063,7 @@ async function sendToProviders(u: User, need: Need): Promise<void> {
 // ---------------------------------------------------------------- selling something
 
 async function startSell(u: User): Promise<void> {
+  if (!u.profile) return startProfile(u, "Before you list, let's set up your seller profile. Buyers see it before they swap numbers with you, so it takes 1 minute and gets you more deals.");
   if (activeListingsOf(u.phone).length >= MAX_ACTIVE_LISTINGS) {
     await wa.sendText(u.phone, `You already have ${MAX_ACTIVE_LISTINGS} active listings. Mark one as sold or pause it in *My posts* to add another.`);
     return showMenu(u, "Main menu");
@@ -1247,7 +1396,7 @@ async function introduceProvider(lead: Lead, again = false): Promise<void> {
       { id: `conn:no:${lead.id}`, title: "No thanks" },
       { id: `report:${lead.id}`, title: "Report" },
     ],
-    { ...(l.photos[0] ? { imageUrl: l.photos[0] } : {}), ...(l.sample ? { footer: "Sample provider for the demo" } : {}) },
+    { ...((l.photos[0] ?? users.get(l.owner)?.profile?.photo) ? { imageUrl: l.photos[0] ?? users.get(l.owner)?.profile?.photo } : {}), ...(l.sample ? { footer: "Sample provider for the demo" } : {}) },
   );
   if (again) return;
   const quotes = leadsFor(need.id).filter((x) => x.status === "INTERESTED" || x.status === "CONNECTED");
