@@ -31,7 +31,7 @@ async function check(res: Response, what: string): Promise<void> {
 export async function loadTable<T>(table: string, select = "*"): Promise<T[]> {
   const out: T[] = [];
   for (let from = 0; ; from += 1000) {
-    const res = await fetch(`${env.SUPABASE_URL}/rest/v1/${table}?select=${select}&order=${table === "credit_entries" ? "at" : "id"}.asc`, {
+    const res = await fetch(`${env.SUPABASE_URL}/rest/v1/${table}?select=${select}&order=${table === "credit_entries" ? "at" : table === "meta" ? "key" : "id"}.asc`, {
       headers: headers({ Range: `${from}-${from + 999}`, "Range-Unit": "items" }),
     });
     await check(res, `load ${table}`);
