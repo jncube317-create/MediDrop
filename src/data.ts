@@ -68,12 +68,23 @@ export interface Bundle {
 
 // Placeholder prices to test. $2 is the smallest so EcoCash/Paynow fees don't eat it.
 export const BUNDLES: Bundle[] = [
-  { key: "b5", credits: 5, cents: 200 },
-  { key: "b15", credits: 15, cents: 500 },
-  { key: "b35", credits: 35, cents: 1000 },
+  // Free users get 3 credits a week, so these are for active buyers and sellers.
+  // 50c → 43c → 38c per credit: a real reward for the bigger bundle without giving swaps away.
+  { key: "b2", credits: 2, cents: 100 },
+  { key: "b7", credits: 7, cents: 300 },
+  { key: "b13", credits: 13, cents: 500 },
 ];
 
 export const WELCOME_CREDITS = 3;
+/** Every week (Monday, Harare time) free credits top back up to this, once. Never stacks above it. */
+export const WEEKLY_FREE_CREDITS = 3;
+
+/** Monday of the current week in Harare (UTC+2), as YYYY-MM-DD. Used as the weekly top-up key. */
+export function weekKey(now = Date.now()): string {
+  const d = new Date(now + 2 * 3600_000);
+  const back = (d.getUTCDay() + 6) % 7; // days since Monday
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - back)).toISOString().slice(0, 10);
+}
 export const MAX_ACTIVE_LISTINGS = 5;
 export const MAX_CONNECTIONS_PER_NEED = 3;
 export const LEADS_PER_NEED = 5;

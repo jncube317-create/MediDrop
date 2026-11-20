@@ -26,6 +26,8 @@ import {
   SAMPLE_LISTINGS,
   SAMPLE_SELLERS,
   WELCOME_CREDITS,
+  WEEKLY_FREE_CREDITS,
+  weekKey,
   WHEN_LABEL,
   bannedWord,
   categoriesOf,
@@ -106,6 +108,7 @@ interface User {
   verified: boolean;
   pharmacy?: { details: string; approvedAt: number } | null; // licensed pharmacy, approved by admin
   pharmacyApplication?: string | null;
+  lastWeekly?: string; // week the free top-up was last checked
   step: Step;
   draft: Draft;
   changingCity: boolean;
@@ -474,6 +477,16 @@ async function conversation(m: Incoming): Promise<void> {
     await wa.sendText(to, "Your unfinished post timed out, so we've cleared it.");
   }
 
+  // ---- weekly free credits: once a week, top back up to 3 (never stacks)
+  if (u.city && u.lastWeekly !== weekKey()) {
+    u.lastWeekly = weekKey();
+    const added = ledger.weekly(u.phone, WEEKLY_FREE_CREDITS, u.lastWeekly);
+    if (added > 0) {
+      track("weekly_credits", to, { added });
+      await wa.sendText(to, `🎁 Your free weekly credits are here: you now have *${credits(ledger.balance(to))}*. They top back up to ${WEEKLY_FREE_CREDITS} every Monday.`);
+    }
+  }
+
   // ---- first contact: consent → name → city
   if (u.step === "ASK_CONSENT") {
     if (id === "consent:yes") {
@@ -503,6 +516,7 @@ async function conversation(m: Incoming): Promise<void> {
     u.changingCity = false;
     if (first) {
       ledger.welcome(u.phone, WELCOME_CREDITS);
+      u.lastWeekly = weekKey(); // sign-up week is covered by the welcome credits
       track("signed_up", to, { city: city.key });
       return askRole(u);
     }
@@ -2028,7 +2042,7 @@ async function showCredits(u: User): Promise<void> {
   await prompt(u, () =>
     wa.sendList(
       u.phone,
-      `💳 You have *${credits(ledger.balance(u.phone))}*.\n\nA number swap uses 1 credit from each side (3 for cars and houses, 2 for venues). Held credits come back if a swap doesn't happen. Ads use ${credits(AD_TAP_COST)} per tap.`,
+      `💳 You have *${credits(ledger.balance(u.phone))}*.\n\nA number swap uses 1 credit from each side. Held credits come back if a swap doesn't happen. Ads use ${credits(AD_TAP_COST)} per tap.\n\n🎁 Free: every Monday your credits top back up to ${WEEKLY_FREE_CREDITS} if you have fewer. Need more? Buy a bundle:`,
       "Buy credits",
       BUNDLES.map((b) => ({ id: `buy:${b.key}`, title: `${credits(b.credits)} · ${formatUsd(b.cents)}`, description: `${formatUsd(Math.round(b.cents / b.credits))} per credit` })),
       "Bundles",

@@ -361,13 +361,14 @@ async function main(): Promise<void> {
 
     // ---- buying credits (simulated EcoCash)
     r = await send(BUYER2, { reply: "menu:credits" });
-    check(has(r, BUYER2, /buy:b5/) && !has(r, BUYER2, /\$1\.00/), "smallest bundle is $2");
-    await send(BUYER2, { reply: "buy:b5" });
+    check(has(r, BUYER2, /2 credits · \$1\.00/) && has(r, BUYER2, /7 credits · \$3\.00/) && has(r, BUYER2, /13 credits · \$5\.00/), "bundles are $1, $3 and $5");
+    check(has(r, BUYER2, /every Monday your credits top back up to 3/), "credits screen explains the weekly free credits");
+    await send(BUYER2, { reply: "buy:b2" });
     r = await send(BUYER2, { reply: "pay:self" });
     check(has(r, BUYER2, /enter your PIN/), "EcoCash prompt sent");
     await sleep(2500);
     r = flush();
-    check(has(r, BUYER2, /Payment received[\s\S]*\+5 credits/), "credits added only after payment confirms");
+    check(has(r, BUYER2, /Payment received[\s\S]*\+2 credits/), "credits added only after payment confirms");
 
     // ---- menu works in any capitals, unknown taps re-prompt
     r = await send(CUSTOMER, { text: "MeNu" });

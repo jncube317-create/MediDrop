@@ -4,7 +4,7 @@ import { eligible, keywords, level, profileScore, quoteCents, rankItems, rankPro
 import { Ledger } from "../src/credits";
 import { canMove, isStale, moveLead, prettyPhone, chatLink, LEAD_TTL_MS, type Lead } from "../src/leads";
 import {
-  BUNDLES, CATEGORIES, blockedReason, CITIES, SAMPLE_ADS, SAMPLE_LISTINGS, SAMPLE_SELLERS, bannedWord, categoriesOf, fit, getCategory, parseDollars,
+  BUNDLES, CATEGORIES, blockedReason, weekKey, CITIES, SAMPLE_ADS, SAMPLE_LISTINGS, SAMPLE_SELLERS, bannedWord, categoriesOf, fit, getCategory, parseDollars,
 } from "../src/data";
 import { LIMITS } from "../src/limits";
 import { existsSync } from "node:fs";
@@ -166,7 +166,7 @@ test("categories, towns and bundles fit WhatsApp limits", () => {
     assert.ok(Number.isInteger(c.swapCost) && c.swapCost >= 1);
   }
   for (const c of CITIES) assert.ok(c.name.length <= LIMITS.listRowTitle, c.name);
-  for (const b of BUNDLES) assert.ok(Number.isInteger(b.cents) && b.cents >= 200, "smallest bundle is $2 so fees don't eat it");
+  for (const b of BUNDLES) assert.ok(Number.isInteger(b.cents) && b.cents >= 100, "smallest bundle is $1");
   assert.equal(getCategory("cars")?.swapCost, 1, "launch pricing: every swap costs 1 credit");
 });
 
@@ -229,4 +229,19 @@ test("input guard: links, contact details, code, illegal goods and medicines are
   assert.equal(kind("selling dagga"), "banned");
   for (const t of ["need tramadol", "selling cough syrup", "antibiotics for sale", "prescription meds"]) assert.equal(kind(t), "medicine", t);
   for (const t of ["Toyota Vitz under $4,500", "Plumber in Bulawayo this week", "Fuel injection pump for Hilux", "2015 Honda Fit 1.3", "Fridge 350L $520", "Samsung tablet 10 inch", "Budget 5 500 USD", "MENU"]) assert.equal(kind(t), null, t);
+});
+
+test("weekly free credits: top up to 3 once a week, never above, never twice", () => {
+  const l = new Ledger();
+  l.welcome("263770000009", 3);
+  assert.equal(l.weekly("263770000009", 3, "2026-11-23"), 0, "already has 3: nothing added");
+  l.hold("263770000009", "L9", 1);
+  l.capture("L9");
+  l.hold("263770000009", "L10", 1);
+  l.capture("L10");
+  assert.equal(l.weekly("263770000009", 3, "2026-11-30"), 2, "tops 1 back up to 3");
+  assert.equal(l.weekly("263770000009", 3, "2026-11-30"), 0, "only once per week");
+  assert.equal(l.balance("263770000009"), 3);
+  assert.equal(weekKey(Date.parse("2026-11-20T10:00:00Z")), "2026-11-16", "Friday belongs to Monday's week");
+  assert.equal(weekKey(Date.parse("2026-11-22T22:30:00Z")), "2026-11-23", "Sunday 22:30 UTC is already Monday in Harare");
 });

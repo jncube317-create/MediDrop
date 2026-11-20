@@ -65,6 +65,15 @@ export class Ledger {
     return this.add(phone, credits, "grant", `grant:${key}`);
   }
 
+  /** Weekly free credits: once per week, tops the balance up to `target` (never above it). Returns credits added. */
+  weekly(phone: string, target: number, week: string): number {
+    const key = `weekly:${phone}:${week}`;
+    const add = target - this.balance(phone);
+    if (this.keys.has(key) || add <= 0) return 0;
+    this.add(phone, add, "grant", key);
+    return add;
+  }
+
   /** Straight spend (e.g. a sponsored-ad tap). False if the balance is too low or already spent. */
   spend(phone: string, amount: number, key: string): boolean {
     if (amount <= 0) throw new Error("spend must be positive");
