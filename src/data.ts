@@ -86,6 +86,43 @@ export const BANNED = [
   "ivory", "rhino horn", "pangolin", "explosives",
 ];
 
+/** Medicines can't be bought or sold between people on Scoutly (licensed pharmacies only). */
+export const MEDICINE_WORDS = [
+  "medicine", "medicines", "medication", "medications", "prescription", "prescriptions", "pharmacy drugs",
+  "antibiotic", "antibiotics", "tramadol", "codeine", "bronco", "broncleer", "diazepam", "valium", "morphine",
+  "pethidine", "viagra", "cialis", "pills", "sleeping pills", "painkillers", "pain killers", "cough syrup",
+  "steroids", "misoprostol", "abortion pills", "arvs", "insulin",
+];
+
+export type BlockReason = { kind: "link" } | { kind: "contact" } | { kind: "code" } | { kind: "banned"; word: string } | { kind: "medicine"; word: string };
+
+const LINK = /(https?:\/\/|www\.|wa\.me\/|t\.me\/|bit\.ly|tinyurl|\b[a-z0-9-]+\.(com|net|org|info|biz|io|co|me|ly|link|xyz|app|site|online|shop|store|top|click|live|zw|za)\b)/i;
+
+// Phone numbers and emails: numbers are only shared by Scoutly once both people agree (and pay).
+const CONTACT = /(?:\+|\b00)?\b263[\s-]*7\d(?:[\s-]*\d){7}\b|\b0\s*7\d(?:[\s-]*\d){7}\b|\b\d{10,}\b|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i;
+
+function looksLikeCode(text: string): boolean {
+  const t = text.trim();
+  if (/^[\[{][\s\S]*[\]}]$/.test(t)) return true; // JSON object or array
+  if (/"[^"]{1,40}"\s*:\s*/.test(t) && /[{}]/.test(t)) return true; // "key": value
+  if (/<\/?[a-z][a-z0-9]*[^>]*>/i.test(t)) return true; // HTML tags
+  if (/```|\$\{|<\?php|\bselect\b.+\bfrom\b|\bdrop\s+table\b|\bunion\s+select\b/i.test(t)) return true;
+  return false;
+}
+
+/** Why a typed message must not be processed, or null if it's fine. Checked on every typed message. */
+export function blockedReason(text: string): BlockReason | null {
+  if (LINK.test(text)) return { kind: "link" };
+  if (CONTACT.test(text)) return { kind: "contact" };
+  if (looksLikeCode(text)) return { kind: "code" };
+  const banned = bannedWord(text);
+  if (banned) return { kind: "banned", word: banned };
+  const t = ` ${text.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ")} `;
+  const med = MEDICINE_WORDS.find((w) => t.includes(` ${w} `));
+  if (med) return { kind: "medicine", word: med };
+  return null;
+}
+
 export function bannedWord(text: string): string | null {
   const t = ` ${text.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ")} `;
   return BANNED.find((w) => t.includes(` ${w} `)) ?? null;

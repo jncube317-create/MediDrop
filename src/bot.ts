@@ -37,6 +37,7 @@ import {
   type Condition,
   type Kind,
   type WhenKey,
+  blockedReason,
 } from "./data";
 import { Ledger, type Entry } from "./credits";
 import { LEVEL_ICON, averageRating, eligible, level, profileScore, quoteCents, rankItems, rankProviders } from "./match";
@@ -415,7 +416,37 @@ async function refusedAsBanned(u: User, text: string): Promise<boolean> {
 
 export async function handleIncoming(m: Incoming): Promise<void> {
   if (isAdmin(m.from) && /^(stats|lookup|grant|verify|ads)\b/i.test(textOf(m))) return adminCommand(m.from, textOf(m));
+  if (m.kind === "text" && (await refusedInput(m.from, m.text))) return;
   return conversation(m);
+}
+
+/** Every typed message is checked first: no links, no code or JSON, no illegal goods, no medicines. */
+async function refusedInput(phone: string, text: string): Promise<boolean> {
+  const why = blockedReason(text);
+  if (!why) return false;
+  track("input_refused", phone, { reason: why.kind });
+  const u = users.get(phone);
+  switch (why.kind) {
+    case "link":
+      await wa.sendText(phone, `For everyone's safety, ${env.APP_NAME} doesn't accept links or web addresses. Please describe it in words instead.`);
+      return true;
+    case "contact":
+      await wa.sendText(phone, `Please don't type phone numbers or emails here. ${env.APP_NAME} swaps numbers for you once both of you agree, so nobody sees your number before that.`);
+      return true;
+    case "code":
+      await wa.sendText(phone, "Sorry, I can only read normal text. Please type your message in plain words.");
+      return true;
+    case "medicine":
+      if (u) { u.draft = {}; u.step = u.step.startsWith("ASK_") ? u.step : "MENU"; }
+      await wa.sendText(phone, `Sorry, ${env.APP_NAME} can't be used to buy or sell medicines. For medicine, please go to a registered pharmacy or ask your doctor. Type MENU to do something else.`);
+      if (env.ADMIN_PHONE) await wa.sendText(env.ADMIN_PHONE, `💊 *Medicine request blocked* (word: "${why.word}")\nFrom: ${u?.name ?? "?"} ${prettyPhone(phone)}\n"${fit(text, 200)}"`);
+      return true;
+    case "banned":
+      if (u) { u.draft = {}; u.step = u.step.startsWith("ASK_") ? u.step : "MENU"; }
+      await wa.sendText(phone, `Sorry, we can't accept that. ${env.APP_NAME} doesn't allow illegal goods or services. Type TERMS to see the rules.`);
+      if (env.ADMIN_PHONE) await wa.sendText(env.ADMIN_PHONE, `🚫 *Blocked* (word: "${why.word}")\nFrom: ${u?.name ?? "?"} ${prettyPhone(phone)}\n"${fit(text, 200)}"`);
+      return true;
+  }
 }
 
 async function conversation(m: Incoming): Promise<void> {

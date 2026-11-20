@@ -232,6 +232,14 @@ async function main(): Promise<void> {
 
     // ---- a seller lists a fridge with a photo; a buyer with alerts on gets it straight away
     await onboard(BUYER2, "Rudo");
+    r = await send(BUYER2, { text: "check https://cheapcars.example.com" });
+    check(has(r, BUYER2, /doesn't accept links/), "links are refused");
+    r = await send(BUYER2, { text: '{"type":"text","body":"hi"}' });
+    check(has(r, BUYER2, /only read normal text/), "JSON input is refused");
+    r = await send(BUYER2, { text: "call me on 0771234567" });
+    check(has(r, BUYER2, /don't type phone numbers/), "phone numbers in messages are refused");
+    r = await send(BUYER2, { text: "I need tramadol" });
+    check(has(r, BUYER2, /can't be used to buy or sell medicines/) && has(r, ADMIN, /Medicine request blocked/), "medicine requests are refused and flagged to admin");
     r = await post(BUYER2, { text: "fridge", kind: "item", cat: "appliances", budget: "$350", when: "flexible" });
     check(has(r, BUYER2, /\[photo fridge\.jpg\][\s\S]*Defy combi fridge[\s\S]*\$520 · New/), "one match comes as a single picture card (new Defy fridge)");
     r = await send(BUYER2, { reply: "alert:on:N-1002" });
@@ -311,7 +319,7 @@ async function main(): Promise<void> {
     // ---- illegal posts are blocked and flagged
     await onboard(ADMIN, "Ann");
     r = await send(CUSTOMER, { text: "selling dagga cheap" });
-    check(has(r, CUSTOMER, /can't post that/) && has(r, ADMIN, /Post blocked[\s\S]*dagga/), "illegal post refused and admin alerted");
+    check(has(r, CUSTOMER, /can.t accept that[\s\S]*illegal goods/) && has(r, ADMIN, /Blocked[\s\S]*dagga/), "illegal post refused and admin alerted");
 
     // ---- self-serve ad → admin approves → live
     await send(PROVIDER, { reply: "menu:ads" });

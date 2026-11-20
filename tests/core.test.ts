@@ -4,7 +4,7 @@ import { eligible, keywords, level, profileScore, quoteCents, rankItems, rankPro
 import { Ledger } from "../src/credits";
 import { canMove, isStale, moveLead, prettyPhone, chatLink, LEAD_TTL_MS, type Lead } from "../src/leads";
 import {
-  BUNDLES, CATEGORIES, CITIES, SAMPLE_ADS, SAMPLE_LISTINGS, SAMPLE_SELLERS, bannedWord, categoriesOf, fit, getCategory, parseDollars,
+  BUNDLES, CATEGORIES, blockedReason, CITIES, SAMPLE_ADS, SAMPLE_LISTINGS, SAMPLE_SELLERS, bannedWord, categoriesOf, fit, getCategory, parseDollars,
 } from "../src/data";
 import { LIMITS } from "../src/limits";
 import { existsSync } from "node:fs";
@@ -219,4 +219,14 @@ test("ledger: saved entries restore the same balance after a restart, without do
   assert.equal(b.balance("263770000001"), 2);
   assert.equal(b.welcome("263770000001", 3), false, "welcome credits are never given twice, even after a restart");
   assert.equal(b.isHeld("L1"), false);
+});
+
+test("input guard: links, contact details, code, illegal goods and medicines are refused; normal text passes", () => {
+  const kind = (t: string) => blockedReason(t)?.kind ?? null;
+  for (const t of ["see https://x.co/abc", "www.cars.co.zw", "join wa.me/263771234567", "check bit.ly/deal", "visit mycarsales.com"]) assert.equal(kind(t), "link", t);
+  for (const t of ["call me 0771234567", "+263 77 123 4567", "263-71-234-5678", "email joe@gmail.com"]) assert.ok(["contact", "link"].includes(kind(t) ?? ""), t);
+  for (const t of ['{"text":"hi"}', '[1,2,3]', '<script>alert(1)</script>', "x' union select * from users"]) assert.equal(kind(t), "code", t);
+  assert.equal(kind("selling dagga"), "banned");
+  for (const t of ["need tramadol", "selling cough syrup", "antibiotics for sale", "prescription meds"]) assert.equal(kind(t), "medicine", t);
+  for (const t of ["Toyota Vitz under $4,500", "Plumber in Bulawayo this week", "Fuel injection pump for Hilux", "2015 Honda Fit 1.3", "Fridge 350L $520", "Samsung tablet 10 inch", "Budget 5 500 USD", "MENU"]) assert.equal(kind(t), null, t);
 });
