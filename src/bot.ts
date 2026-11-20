@@ -38,6 +38,7 @@ import {
   type Kind,
   type WhenKey,
   blockedReason,
+  medicineWord,
 } from "./data";
 import { Ledger, type Entry } from "./credits";
 import { LEVEL_ICON, averageRating, eligible, level, profileScore, quoteCents, rankItems, rankProviders } from "./match";
@@ -65,7 +66,7 @@ type Step =
   | "CAT_KIND" | "CAT_PICK"
   | "FIND_TEXT" | "FIND_BUDGET" | "FIND_WHEN" | "FIND_DATE" | "FIND_WHERE" | "FIND_CONFIRM"
   | "SELL_TITLE" | "SELL_DESC" | "SELL_COND" | "SELL_PRICE" | "SELL_PHOTOS" | "SELL_COVER" | "SELL_CONFIRM"
-  | "QUOTE_TEXT"
+  | "QUOTE_TEXT" | "PHARM_DETAILS"
   | "AD_TEXT" | "AD_PHOTO" | "AD_WHERE" | "AD_CONFIRM"
   | "BUY_PAYER" | "BUY_OTHER_NUMBER" | "BUY_WAIT";
 
@@ -103,6 +104,8 @@ interface User {
   profile: Profile | null;
   city: string | null;
   verified: boolean;
+  pharmacy?: { details: string; approvedAt: number } | null; // licensed pharmacy, approved by admin
+  pharmacyApplication?: string | null;
   step: Step;
   draft: Draft;
   changingCity: boolean;
@@ -369,7 +372,8 @@ function badges(l: Listing): string {
   const avg = averageRating(l);
   const lv = level(l.jobs, avg);
   const stars = l.ratingCount ? `⭐ ${avg.toFixed(1)} (${l.ratingCount})` : "⭐ New";
-  return `${LEVEL_ICON[lv]} ${lv} · ${stars}${users.get(l.owner)?.verified ? " · ✅ Verified" : ""}`;
+  const owner = users.get(l.owner);
+  return `${LEVEL_ICON[lv]} ${lv} · ${stars}${owner?.pharmacy ? " · 💊 Licensed pharmacy" : owner?.verified ? " · ✅ Verified" : ""}`;
 }
 
 /** Fits a carousel card: max 160 characters and 2 line breaks. */
@@ -415,7 +419,11 @@ async function refusedAsBanned(u: User, text: string): Promise<boolean> {
 // ---------------------------------------------------------------- entry point
 
 export async function handleIncoming(m: Incoming): Promise<void> {
-  if (isAdmin(m.from) && /^(stats|lookup|grant|verify|ads)\b/i.test(textOf(m))) return adminCommand(m.from, textOf(m));
+  if (isAdmin(m.from) && /^(stats|lookup|grant|verify|ads|pharmacy\s+\+?\d|unpharmacy\s+\+?\d)/i.test(textOf(m))) return adminCommand(m.from, textOf(m));
+  if (isAdmin(m.from) && m.kind === "reply" && /^pharm:(ok|no):\d+$/.test(m.id)) {
+    const [, verdict, phone] = m.id.split(":");
+    return reviewPharmacy(m.from, phone ?? "", verdict === "ok");
+  }
   if (m.kind === "text" && (await refusedInput(m.from, m.text))) return;
   return conversation(m);
 }
@@ -436,11 +444,16 @@ async function refusedInput(phone: string, text: string): Promise<boolean> {
     case "code":
       await wa.sendText(phone, "Sorry, I can only read normal text. Please type your message in plain words.");
       return true;
-    case "medicine":
-      if (u) { u.draft = {}; u.step = u.step.startsWith("ASK_") ? u.step : "MENU"; }
-      await wa.sendText(phone, `Sorry, ${env.APP_NAME} can't be used to buy or sell medicines. For medicine, please go to a registered pharmacy or ask your doctor. Type MENU to do something else.`);
-      if (env.ADMIN_PHONE) await wa.sendText(env.ADMIN_PHONE, `💊 *Medicine request blocked* (word: "${why.word}")\nFrom: ${u?.name ?? "?"} ${prettyPhone(phone)}\n"${fit(text, 200)}"`);
+    case "medicine": {
+      // Searching for medicine is fine (we only show licensed pharmacies). Selling it is pharmacies only.
+      const selling = u ? /^(SELL_|AD_|PROF_)/.test(u.step) || u.draft.mode === "sell" || u.draft.mode === "ad" : false;
+      if (!selling || u?.pharmacy) return false;
+      u!.draft = {};
+      u!.step = "MENU";
+      await wa.sendText(phone, `Only *licensed pharmacies* can sell medicines on ${env.APP_NAME}. If you're a pharmacy, type PHARMACY to apply.\n\nLooking for medicine? Type MENU and search for it, and we'll show you licensed pharmacies.`);
+      if (env.ADMIN_PHONE) await wa.sendText(env.ADMIN_PHONE, `💊 *Medicine listing blocked* (word: "${why.word}")\nFrom: ${u?.name ?? "?"} ${prettyPhone(phone)}\n"${fit(text, 200)}"`);
       return true;
+    }
     case "banned":
       if (u) { u.draft = {}; u.step = u.step.startsWith("ASK_") ? u.step : "MENU"; }
       await wa.sendText(phone, `Sorry, we can't accept that. ${env.APP_NAME} doesn't allow illegal goods or services. Type TERMS to see the rules.`);
@@ -519,6 +532,7 @@ async function conversation(m: Incoming): Promise<void> {
   if (/^terms$/i.test(text)) return showTerms(to);
   if (/^credits?$/i.test(text)) return showCredits(u);
   if (/^stop$/i.test(text)) return stopAlerts(u);
+  if (/^pharmacy$/i.test(text)) return askPharmacyDetails(u);
 
   // ---- photos
   if (m.kind === "image") {
@@ -611,9 +625,25 @@ async function conversation(m: Incoming): Promise<void> {
           return;
         }
         u.draft = { text: clean(text, 300) };
+        if (medicineWord(text)) return findMedicine(u);
         return askKind(u, "find");
       }
       return didntGetThat(u);
+    }
+
+    // ---- pharmacy application
+    case "PHARM_DETAILS": {
+      if (text.length < 25) return void (await wa.sendText(to, "Please send all the details in one message: pharmacy name, physical address, MCAZ premises licence number, and the responsible pharmacist's name."));
+      u.pharmacyApplication = clean(text, 400);
+      u.step = "MENU";
+      track("pharmacy_applied", to, {});
+      await wa.sendText(to, "Thank you 🙏 We'll check your licence and reply here, usually within 1–2 working days.");
+      if (env.ADMIN_PHONE)
+        await wa.sendButtons(env.ADMIN_PHONE, `💊 *Pharmacy application*\nFrom: ${nameOf(to)} ${prettyPhone(to)}\n\n"${u.pharmacyApplication}"\n\nCheck the licence with MCAZ before approving.`, [
+          { id: `pharm:ok:${to}`, title: "Approve" },
+          { id: `pharm:no:${to}`, title: "Reject" },
+        ]);
+      return;
     }
 
     // ---- seller profile
@@ -649,6 +679,11 @@ async function conversation(m: Incoming): Promise<void> {
     case "CAT_PICK": {
       const cat = id.startsWith("cat:") ? getCategory(id.slice(4)) : undefined;
       if (!cat) return didntGetThat(u);
+      if (cat.pharmacyOnly && (u.draft.mode === "sell" || u.draft.mode === "ad") && !u.pharmacy) {
+        u.draft = {};
+        u.step = "MENU";
+        return void (await wa.sendText(to, `Only *licensed pharmacies* can list medicines on ${env.APP_NAME}. If you're a pharmacy, type PHARMACY to apply. Type MENU to do something else.`));
+      }
       u.draft.category = cat.key;
       if (u.draft.mode === "sell") return cat.kind === "item" ? askSellTitle(u) : askSellDesc(u);
       if (u.draft.mode === "ad") return askAdText(u);
@@ -660,6 +695,7 @@ async function conversation(m: Incoming): Promise<void> {
       if (text.length < 3) return void (await wa.sendText(to, "Please describe it in a few words."));
       if (await refusedAsBanned(u, text)) return;
       u.draft.text = clean(text, 300);
+      if (medicineWord(text) && u.draft.category !== "pharmacy") return findMedicine(u);
       return askBudget(u);
     }
     case "FIND_BUDGET": {
@@ -890,7 +926,7 @@ function profileCard(u: User, p: Profile): string {
   const count = mine.reduce((n, l) => n + l.ratingCount, 0);
   const avg = count ? mine.reduce((n, l) => n + l.ratingSum, 0) / count : 0;
   const rating = count ? `⭐ ${avg.toFixed(1)} (${count})` : "No ratings yet";
-  return `*${p.name}*\n📍 ${cityName(u.city)} · ${u.verified ? "✅ Verified" : "🆕 New member"} · ${rating}\n\n${p.about}`;
+  return `*${p.name}*\n📍 ${cityName(u.city)} · ${u.pharmacy ? "💊 Licensed pharmacy" : u.verified ? "✅ Verified" : "🆕 New member"} · ${rating}\n\n${p.about}`;
 }
 
 async function previewProfile(u: User): Promise<void> {
@@ -937,6 +973,45 @@ async function showProfile(u: User): Promise<void> {
     { id: "prof:redo", title: "Edit profile" },
     { id: "menu:main", title: "Main menu" },
   ], { imageUrl: u.profile.photo });
+}
+
+// ---------------------------------------------------------------- pharmacies
+
+async function findMedicine(u: User): Promise<void> {
+  u.draft.mode = "find";
+  u.draft.kind = "item";
+  u.draft.category = "pharmacy";
+  await wa.sendText(u.phone, `💊 We'll show you *licensed pharmacies* for this. For prescription medicines, take your prescription with you: the pharmacy must see it before selling.`);
+  return askBudget(u);
+}
+
+async function askPharmacyDetails(u: User): Promise<void> {
+  if (u.pharmacy) return showMenu(u, "💊 You're already approved as a licensed pharmacy. List medicines under *Sell or offer → Pharmacy & medicines*.");
+  u.draft = {};
+  u.step = "PHARM_DETAILS";
+  await prompt(u, () =>
+    wa.sendText(
+      u.phone,
+      "💊 *Apply as a licensed pharmacy*\n\nOnly licensed pharmacies can list medicines. Send these in *one message*:\n1. Pharmacy name\n2. Physical address\n3. MCAZ premises licence number\n4. Responsible pharmacist's name\n\nDon't include phone numbers; we already have yours.",
+    ),
+  );
+}
+
+async function reviewPharmacy(admin: string, phone: string, approve: boolean): Promise<void> {
+  const p = users.get(phone);
+  if (!p) return void (await wa.sendText(admin, "That person hasn't messaged the bot."));
+  if (approve) {
+    p.pharmacy = { details: p.pharmacyApplication ?? "approved by admin", approvedAt: Date.now() };
+    p.verified = true;
+    track("pharmacy_approved", phone, {});
+    await wa.sendText(admin, `✅ ${nameOf(phone)} is now a licensed pharmacy.`);
+    await tell(phone, `✅ You're approved as a *licensed pharmacy* on ${env.APP_NAME}. List medicines under *Sell or offer → Pharmacy & medicines*. Your listings show 💊 Licensed pharmacy.`);
+  } else {
+    p.pharmacy = null;
+    await wa.sendText(admin, `Rejected ${nameOf(phone)}'s pharmacy application.`);
+    await tell(phone, `Sorry, we couldn't approve your pharmacy application. Reply PHARMACY to apply again with your MCAZ licence details.`);
+  }
+  p.pharmacyApplication = null;
 }
 
 async function showMenu(u: User, greeting: string): Promise<void> {
@@ -1598,7 +1673,7 @@ async function connect(lead: Lead): Promise<void> {
 
   await wa.sendText(
     lead.customer,
-    `✅ *You're connected with ${nameOf(lead.provider)}* about ${what}\n📞 ${prettyPhone(lead.provider)}\n💬 Chat now: ${chatLink(lead.provider)}\n\nAgree the price before anything changes hands. Meet in a public place, check the item or work, and never pay a deposit before you've seen it.\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.customer))}.\n${LIABILITY}${l?.sample ? "\n\n(Sample seller for the demo: this number isn't real.)" : ""}`,
+    `✅ *You're connected with ${nameOf(lead.provider)}* about ${what}\n📞 ${prettyPhone(lead.provider)}\n💬 Chat now: ${chatLink(lead.provider)}\n\nAgree the price before anything changes hands. Meet in a public place, check the item or work, and never pay a deposit before you've seen it.${l?.category === "pharmacy" ? "\n💊 Prescription medicines: take your prescription. The pharmacy must see it before selling." : ""}\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.customer))}.\n${LIABILITY}${l?.sample ? "\n\n(Sample seller for the demo: this number isn't real.)" : ""}`,
   );
   await tell(
     lead.provider,
@@ -2105,6 +2180,17 @@ async function adminCommand(to: string, text: string): Promise<void> {
       u.verified = true;
       await wa.sendText(to, `✅ ${nameOf(phone)} is now verified.`);
       await tell(phone, `✅ You're now a verified seller on ${env.APP_NAME}. Your listings show the ✅ badge.`);
+      return;
+    }
+    case "pharmacy":
+    case "unpharmacy": {
+      const phone = toIntl(arg1);
+      if (!phone || !users.get(phone)) return void (await wa.sendText(to, "Use: PHARMACY 0771234567 to approve, UNPHARMACY 0771234567 to remove."));
+      if (cmd.toLowerCase() === "pharmacy") return reviewPharmacy(to, phone, true);
+      const p = users.get(phone)!;
+      p.pharmacy = null;
+      for (const l of listings.values()) if (l.owner === phone && l.category === "pharmacy") l.active = false;
+      await wa.sendText(to, `Removed ${nameOf(phone)}'s pharmacy status and paused their medicine listings.`);
       return;
     }
     case "ads": {

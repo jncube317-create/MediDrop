@@ -10,11 +10,13 @@ export interface Category {
   example: string; // shown when asking what they need or offer
   people: string; // "carpenters", used in messages
   swapCost: number; // credits each side uses when numbers are swapped
+  pharmacyOnly?: boolean; // only admin-approved, licensed pharmacies can list here
 }
 
 export const CATEGORIES: Category[] = [
   // ---- items (new and pre-loved)
   { key: "cars", kind: "item", name: "Cars & bakkies", example: "Toyota Vitz under $3,000 / single cab bakkie", people: "car sellers", swapCost: 1 },
+  { key: "pharmacy", kind: "item", name: "Pharmacy & medicines", example: "Panado tablets", people: "licensed pharmacies", swapCost: 1, pharmacyOnly: true },
   { key: "carparts", kind: "item", name: "Car parts", example: "Corolla 2008 side mirror", people: "parts sellers", swapCost: 1 },
   { key: "appliances", kind: "item", name: "Fridges & appliances", example: "Combi fridge / 2-plate stove / washing machine", people: "sellers", swapCost: 1 },
   { key: "furniture", kind: "item", name: "Furniture & household", example: "3-seater couch / double bed", people: "sellers", swapCost: 1 },
@@ -80,16 +82,16 @@ export const AD_TAP_COST = 1;
 
 // Posts containing these are refused and flagged to the admin. Whole words/phrases only.
 export const BANNED = [
-  "dagga", "mbanje", "cocaine", "heroin", "crystal meth", "mutoriro", "weed for sale",
+  "dagga", "mbanje", "cocaine", "heroin", "crystal meth", "mutoriro", "weed for sale", "bronco", "broncleer",
   "firearm", "pistol", "ammunition", "rifle for sale", "gun for sale",
   "stolen", "fake id", "fake passport", "fake documents", "counterfeit",
   "ivory", "rhino horn", "pangolin", "explosives",
 ];
 
-/** Medicines can't be bought or sold between people on Scoutly (licensed pharmacies only). */
+/** Medicines: anyone may search for them, but only licensed pharmacies may list or sell them. */
 export const MEDICINE_WORDS = [
   "medicine", "medicines", "medication", "medications", "prescription", "prescriptions", "pharmacy drugs",
-  "antibiotic", "antibiotics", "tramadol", "codeine", "bronco", "broncleer", "diazepam", "valium", "morphine",
+  "antibiotic", "antibiotics", "tramadol", "codeine", "diazepam", "valium", "morphine",
   "pethidine", "viagra", "cialis", "pills", "sleeping pills", "painkillers", "pain killers", "cough syrup",
   "steroids", "misoprostol", "abortion pills", "arvs", "insulin",
 ];
@@ -121,6 +123,11 @@ export function blockedReason(text: string): BlockReason | null {
   const med = MEDICINE_WORDS.find((w) => t.includes(` ${w} `));
   if (med) return { kind: "medicine", word: med };
   return null;
+}
+
+export function medicineWord(text: string): string | null {
+  const t = ` ${text.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ")} `;
+  return MEDICINE_WORDS.find((w) => t.includes(` ${w} `)) ?? null;
 }
 
 export function bannedWord(text: string): string | null {
