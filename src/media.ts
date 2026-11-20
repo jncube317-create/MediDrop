@@ -1,10 +1,12 @@
 // Photos people send the bot: download from WhatsApp, keep on disk, serve at /media/<file>.
-// Demo storage: files live on the server's disk and are lost on redeploy. v1 moves them to Supabase Storage.
+// With Supabase set, photos go to the public "scoutly-media" bucket and are kept forever.
+// Without it (local demo), they live on the server's disk and are lost on redeploy.
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { env } from "./env";
+import { dbEnabled, uploadPhoto } from "./store";
 
 const graph = () => `${env.GRAPH_BASE_URL}/${env.GRAPH_API_VERSION}`;
 const auth = () => ({ Authorization: `Bearer ${env.WA_TOKEN}` });
@@ -24,6 +26,8 @@ export async function savePhoto(mediaId: string): Promise<string | null> {
     if (!file.ok) throw new Error(`media download HTTP ${file.status}`);
     const bytes = Buffer.from(await file.arrayBuffer());
     if (bytes.length > 5 * 1024 * 1024) throw new Error("photo over 5 MB");
+    const type = mime ?? "image/jpeg";
+    if (dbEnabled()) return await uploadPhoto(`${randomUUID()}.${type === "image/png" ? "png" : type === "image/webp" ? "webp" : "jpg"}`, bytes, type);
     await mkdir(MEDIA_DIR, { recursive: true });
     const name = `${randomUUID()}.jpg`;
     await writeFile(join(MEDIA_DIR, name), bytes);

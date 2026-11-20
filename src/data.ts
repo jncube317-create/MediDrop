@@ -14,14 +14,14 @@ export interface Category {
 
 export const CATEGORIES: Category[] = [
   // ---- items (new and pre-loved)
-  { key: "cars", kind: "item", name: "Cars & bakkies", example: "Toyota Vitz under $3,000 / single cab bakkie", people: "car sellers", swapCost: 3 },
+  { key: "cars", kind: "item", name: "Cars & bakkies", example: "Toyota Vitz under $3,000 / single cab bakkie", people: "car sellers", swapCost: 1 },
   { key: "carparts", kind: "item", name: "Car parts", example: "Corolla 2008 side mirror", people: "parts sellers", swapCost: 1 },
   { key: "appliances", kind: "item", name: "Fridges & appliances", example: "Combi fridge / 2-plate stove / washing machine", people: "sellers", swapCost: 1 },
   { key: "furniture", kind: "item", name: "Furniture & household", example: "3-seater couch / double bed", people: "sellers", swapCost: 1 },
   { key: "building", kind: "item", name: "Doors & building supply", example: "Steel front door / roofing sheets", people: "suppliers", swapCost: 1 },
   { key: "phones", kind: "item", name: "Phones & electronics", example: "Samsung A15 / used laptop", people: "sellers", swapCost: 1 },
   { key: "fashion", kind: "item", name: "Clothes & shoes", example: "Ladies sandals size 5 / school uniforms", people: "sellers", swapCost: 1 },
-  { key: "property", kind: "item", name: "Houses & rentals", example: "2-bed to rent in Hillside", people: "landlords and agents", swapCost: 3 },
+  { key: "property", kind: "item", name: "Houses & rentals", example: "2-bed to rent in Hillside", people: "landlords and agents", swapCost: 1 },
   // ---- services
   { key: "carpentry", kind: "service", name: "Carpentry & furniture", example: "Fix a wardrobe door / build kitchen units", people: "carpenters", swapCost: 1 },
   { key: "mechanic", kind: "service", name: "Mechanic & car repair", example: "Car won't start / service and brakes", people: "mechanics", swapCost: 1 },
@@ -29,7 +29,7 @@ export const CATEGORIES: Category[] = [
   { key: "electrical", kind: "service", name: "Electrical & solar", example: "Install a solar system / fix wiring", people: "electricians", swapCost: 1 },
   { key: "painting", kind: "service", name: "Building & painting", example: "Paint 6 rooms, Dulux, fix and supply", people: "builders and painters", swapCost: 1 },
   { key: "beauty", kind: "service", name: "Hair & beauty", example: "Makeup for a wedding / braids at home", people: "hair and beauty pros", swapCost: 1 },
-  { key: "events", kind: "service", name: "Venues & events", example: "Venue for 40 people / DJ / catering", people: "event providers", swapCost: 2 },
+  { key: "events", kind: "service", name: "Venues & events", example: "Venue for 40 people / DJ / catering", people: "event providers", swapCost: 1 },
   { key: "printing", kind: "service", name: "Printing & branding", example: "200 vinyl stickers / T-shirt printing", people: "printers", swapCost: 1 },
   { key: "moving", kind: "service", name: "Moving & transport", example: "Move a fridge from City Hall to Country Park", people: "movers", swapCost: 1 },
   { key: "other", kind: "service", name: "Something else", example: "Tell us what you need in a few words", people: "people", swapCost: 1 },

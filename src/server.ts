@@ -4,7 +4,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { env, paynowConfigured } from "./env";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { handleIncoming, confirmPurchase, type Incoming } from "./bot";
+import { handleIncoming, confirmPurchase, flushState, initState, type Incoming } from "./bot";
 import { MEDIA_DIR, SAFE_FILE } from "./media";
 
 const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 });
@@ -142,8 +142,15 @@ app.post("/paynow/result", async (req, reply) => {
   return reply.code(200).send("OK");
 });
 
-app
-  .listen({ port: env.PORT, host: "0.0.0.0" })
+// Save everything before Railway stops the old copy during a redeploy.
+for (const sig of ["SIGTERM", "SIGINT"] as const) {
+  process.once(sig, () => {
+    void flushState().finally(() => process.exit(0));
+  });
+}
+
+initState()
+  .then(() => app.listen({ port: env.PORT, host: "0.0.0.0" }))
   .then(() => {
     console.log(`${env.APP_NAME} demo running on port ${env.PORT}`);
     console.log(`Payments: ${paynowConfigured ? "Paynow TEST MODE" : "SIMULATED (Paynow keys not set)"}`);

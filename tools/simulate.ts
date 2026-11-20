@@ -133,25 +133,24 @@ async function onboard(phone: string, name: string, role: "buy" | "sell" = "buy"
   r = await send(phone, { reply: "city:byo" });
   check(has(r, phone, /You have 3 free credits/), `${name}: 3 free credits on sign-up`);
   check(has(r, phone, /role:buy/) && has(r, phone, /role:sell/) && has(r, phone, /role:both/), `${name}: asked whether they're buying or selling`);
-  if (role === "buy") {
-    r = await send(phone, { reply: "role:buy" });
-    check(has(r, phone, /kind:item/), `${name}: a buyer goes straight to finding something`);
-    return send(phone, { text: "MENU" });
-  }
-  r = await send(phone, { reply: "role:sell" });
-  check(has(r, phone, /set up your seller profile/) && has(r, phone, /Step 1 of 3/) && has(r, phone, /prof:usename/), `${name}: a seller starts their profile`);
+  r = await send(phone, { reply: role === "buy" ? "role:buy" : "role:sell" });
+  check(has(r, phone, /quick profile[\s\S]*Everyone on Scoutly has one/) && has(r, phone, /Step 1 of 3/) && has(r, phone, /prof:usename/), `${name}: everyone starts a profile`);
   r = await send(phone, { reply: "prof:usename" });
-  check(has(r, phone, /Step 2 of 3/), `${name}: profile asks what they sell`);
+  check(has(r, phone, /Step 2 of 3/), `${name}: profile asks about them`);
   r = await send(phone, { text: "short" });
   check(has(r, phone, /at least one full sentence/), `${name}: too-short description is refused`);
-  r = await send(phone, { text: "Appliances and painting. Bulawayo, 5 years' experience, fair prices." });
+  r = await send(phone, { text: role === "buy" ? "Teacher in Bulawayo, buying for my family." : "Appliances and painting. Bulawayo, 5 years' experience, fair prices." });
   check(has(r, phone, /Step 3 of 3[\s\S]*profile photo/), `${name}: profile asks for a photo`);
   r = await send(phone, { text: "no photo" });
-  check(has(r, phone, /profile photo is needed before you can sell/), `${name}: the photo is required`);
+  check(has(r, phone, /profile photo is needed/), `${name}: the photo is required`);
   r = await send(phone, { image: "media-9" }, 700);
-  check(has(r, phone, /\[photo [a-f0-9-]{36}\.jpg\][\s\S]*This is what buyers will see[\s\S]*\*Joe\*[\s\S]*New seller[\s\S]*Appliances and painting/) && has(r, phone, /prof:ok/), `${name}: profile preview shows the photo, name and description`);
+  check(has(r, phone, new RegExp(`\\[photo [a-f0-9-]{36}\\.jpg\\][\\s\\S]*This is what people will see[\\s\\S]*\\*${name}\\*[\\s\\S]*New member · No ratings yet`)) && has(r, phone, /prof:ok/), `${name}: profile preview shows the photo, name, rating and description`);
   r = await send(phone, { reply: "prof:ok" });
-  check(has(r, phone, /seller profile is ready[\s\S]*first item or service/) && has(r, phone, /kind:item/), `${name}: profile saved, straight into listing`);
+  if (role === "buy") {
+    check(has(r, phone, /profile is ready[\s\S]*what are you looking for/) && has(r, phone, /kind:item/), `${name}: buyer's profile saved, straight into searching`);
+    return send(phone, { text: "MENU" });
+  }
+  check(has(r, phone, /profile is ready[\s\S]*first item or service/) && has(r, phone, /kind:item/), `${name}: seller's profile saved, straight into listing`);
   return r;
 }
 
@@ -213,7 +212,7 @@ async function main(): Promise<void> {
     check(Boolean(carousel && /BMW 7 Series 745i · \$5,500 · Pre-loved · Nationwide/.test(carousel.options[0] ?? "") && /Nissan NP300 single cab · \$8,500/.test(carousel.options[1] ?? "")), "cards show photo, price and condition, cheapest first");
     check(Boolean(carousel && /bmw745\.jpg/.test(carousel.options[0] ?? "")), "the BMW card uses its real photo");
     check(Boolean(carousel && /^adtap:AD-\d+ · Sponsored · Kudu Car Cover/.test(carousel.options.at(-1) ?? "")), "the last card is a labelled sponsored ad (complementary: insurance for cars)");
-    check(has(r, CUSTOMER, /Swapping numbers uses 3 credits \(you have 3\)/) && has(r, CUSTOMER, /alert:on:N-1001/), "explains the car swap cost and offers alerts");
+    check(has(r, CUSTOMER, /Swapping numbers uses 1 credit \(you have 3\)/) && has(r, CUSTOMER, /alert:on:N-1001/), "explains the swap cost (1 credit for everything) and offers alerts");
     const npCard = option(r, CUSTOMER, /^int:O-\d+:N-1001(?= · Nissan)/);
 
     // ---- tapping a sponsored card shares the advertiser's contact
@@ -222,19 +221,16 @@ async function main(): Promise<void> {
 
     // ---- interest in the bakkie: credits held, sample seller accepts, numbers swapped, "found it?" closes the post
     r = await send(CUSTOMER, { reply: npCard });
-    check(has(r, CUSTOMER, /asked Busi M\.[\s\S]*3 credits on hold/), "buyer's 3 credits are held while the seller decides");
+    check(has(r, CUSTOMER, /asked Busi M\.[\s\S]*1 credit on hold/), "buyer's credit is held while the seller decides");
     await sleep(1300);
     r = flush();
-    check(has(r, CUSTOMER, /connected with Busi M\.\* about the Nissan NP300 single cab \(\$8,500\)[\s\S]*3 credits used\. Balance: 0 credits/), "seller accepts: numbers swapped, credits spent");
+    check(has(r, CUSTOMER, /connected with Busi M\.\* about the Nissan NP300 single cab \(\$8,500\)[\s\S]*1 credit used\. Balance: 2 credits/), "seller accepts: numbers swapped, credits spent");
     check(has(r, CUSTOMER, /found:yes:N-1001/), "asks whether they found what they needed");
     r = await send(CUSTOMER, { reply: "found:yes:N-1001" });
     check(has(r, CUSTOMER, /closed N-1001, so nobody else gets it/), "found it: post closed");
 
     // ---- a seller lists a fridge with a photo; a buyer with alerts on gets it straight away
     await onboard(BUYER2, "Rudo");
-    r = await send(BUYER2, { reply: "menu:sell" });
-    check(has(r, BUYER2, /Before you list, let's set up your seller profile/), "a buyer who tries to sell is asked for a profile first");
-    await send(BUYER2, { text: "MENU" });
     r = await post(BUYER2, { text: "fridge", kind: "item", cat: "appliances", budget: "$350", when: "flexible" });
     check(has(r, BUYER2, /\[photo fridge\.jpg\][\s\S]*Defy combi fridge[\s\S]*\$520 · New/), "one match comes as a single picture card (new Defy fridge)");
     r = await send(BUYER2, { reply: "alert:on:N-1002" });

@@ -38,7 +38,7 @@ import {
   type Kind,
   type WhenKey,
 } from "./data";
-import { Ledger } from "./credits";
+import { Ledger, type Entry } from "./credits";
 import { LEVEL_ICON, averageRating, eligible, level, profileScore, quoteCents, rankItems, rankProviders } from "./match";
 import { chatLink, isOpen, isStale, moveLead, prettyPhone, type Lead } from "./leads";
 import { formatUsd } from "./money";
@@ -46,6 +46,7 @@ import { checkPayment, startPayment } from "./pay";
 import { formatLocalNumber, networkMatches, normalizeZwMobile, toLocalNumber } from "./paystatus";
 import { track } from "./analytics";
 import { demoPhoto, savePhoto } from "./media";
+import { dbEnabled, loadTable, upsert, type CreditRow, type Row } from "./store";
 import type { CarouselCard } from "./limits";
 
 export type Incoming =
@@ -85,6 +86,7 @@ interface Draft {
   nationwide?: boolean;
   bundle?: string;
   profile?: Partial<Profile>;
+  next?: "find" | "sell" | "menu"; // where to go after the profile is saved
 }
 
 /** What buyers see about a seller or service provider. */
@@ -228,7 +230,88 @@ function seedSamples(): void {
   }
   console.log(`[DEMO] ${SAMPLE_LISTINGS.length} sample listings and ${SAMPLE_ADS.length} sample ads loaded (SAMPLE_PROVIDERS=false removes them)`);
 }
-seedSamples();
+// ---------------------------------------------------------------- saving to Supabase
+
+type Table = "users" | "needs" | "listings" | "leads" | "ads" | "purchases";
+const TABLES: { name: Table; map: Map<string, object>; skip: (v: any) => boolean }[] = [
+  { name: "users", map: users, skip: (u: User) => isSample(u.phone) },
+  { name: "needs", map: needs, skip: (n: Need) => isSample(n.owner) },
+  { name: "listings", map: listings, skip: (l: Listing) => Boolean(l.sample) || isSample(l.owner) },
+  { name: "leads", map: leads, skip: (l: Lead) => isSample(l.provider) || isSample(l.customer) },
+  { name: "ads", map: ads, skip: (a: Ad) => isSample(a.owner) },
+  { name: "purchases", map: purchases, skip: () => false },
+];
+const savedJson = new Map<string, string>();
+let savedEntries = 0;
+let savedSeq = "";
+let flushing = false;
+
+const seqs = () => ({ needSeq, listingSeq, leadSeq, adSeq, purchaseSeq });
+const maxNum = (ids: Iterable<string>) => Math.max(0, ...[...ids].map((id) => Number(id.replace(/\D/g, "")) || 0));
+
+/** Loads saved data (if Supabase is set), then adds the demo samples. Call once before serving. */
+export async function initState(): Promise<void> {
+  if (dbEnabled()) {
+    for (const t of TABLES) {
+      const rows = await loadTable<Row>(t.name, "id,data");
+      for (const r of rows) {
+        const v = r.data as Record<string, unknown>;
+        if (t.name === "users") v.reprompt = null; // functions aren't saved
+        t.map.set(r.id, v);
+        savedJson.set(`${t.name}:${r.id}`, JSON.stringify(v));
+      }
+    }
+    const entries = await loadTable<CreditRow>("credit_entries", "key,phone,delta,kind,at");
+    ledger.load(entries.map((e) => ({ key: e.key, phone: e.phone, delta: e.delta, kind: e.kind as Entry["kind"], at: Date.parse(e.at) })));
+    savedEntries = ledger.all().length;
+    const meta = await loadTable<{ key: string; value: Partial<ReturnType<typeof seqs>> }>("meta", "key,value");
+    const saved = meta.find((m) => m.key === "seq")?.value ?? {};
+    needSeq = Math.max(needSeq, saved.needSeq ?? 0, maxNum(needs.keys()));
+    listingSeq = Math.max(listingSeq, saved.listingSeq ?? 0, maxNum(listings.keys()));
+    leadSeq = Math.max(leadSeq, saved.leadSeq ?? 0, maxNum(leads.keys()));
+    adSeq = Math.max(adSeq, saved.adSeq ?? 0, maxNum(ads.keys()));
+    purchaseSeq = Math.max(purchaseSeq, saved.purchaseSeq ?? 0, maxNum(purchases.keys()));
+    console.log(`[DB] Loaded ${users.size} users, ${needs.size} posts, ${listings.size} listings, ${leads.size} leads, ${savedEntries} credit entries.`);
+    setInterval(() => void flushState(), 2000).unref();
+  } else {
+    console.warn("⚠️ No SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY: data lives in memory and is wiped on every redeploy.");
+  }
+  seedSamples();
+}
+
+/** Saves anything that changed since the last save. Runs every 2 seconds and on shutdown. */
+export async function flushState(): Promise<void> {
+  if (!dbEnabled() || flushing) return;
+  flushing = true;
+  try {
+    for (const t of TABLES) {
+      const changed: { id: string; data: unknown; updated_at: string; json: string }[] = [];
+      for (const [id, v] of t.map) {
+        if (t.skip(v)) continue;
+        const json = JSON.stringify(v);
+        if (savedJson.get(`${t.name}:${id}`) !== json) changed.push({ id, data: JSON.parse(json), updated_at: new Date().toISOString(), json });
+      }
+      if (!changed.length) continue;
+      await upsert(t.name, changed.map(({ json: _json, ...row }) => row));
+      for (const c of changed) savedJson.set(`${t.name}:${c.id}`, c.json);
+    }
+    const all = ledger.all();
+    if (all.length > savedEntries) {
+      const fresh = all.slice(savedEntries).filter((e) => !isSample(e.phone));
+      if (fresh.length) await upsert("credit_entries", fresh.map((e) => ({ key: e.key, phone: e.phone, delta: e.delta, kind: e.kind, at: new Date(e.at).toISOString() })), true);
+      savedEntries = all.length;
+    }
+    const seq = JSON.stringify(seqs());
+    if (seq !== savedSeq) {
+      await upsert("meta", [{ key: "seq", value: seqs() }]);
+      savedSeq = seq;
+    }
+  } catch (err) {
+    console.error("[DB] save failed, will retry:", err instanceof Error ? err.message : err);
+  } finally {
+    flushing = false;
+  }
+}
 
 // ---------------------------------------------------------------- helpers
 
@@ -383,15 +466,14 @@ async function conversation(m: Incoming): Promise<void> {
   }
 
   if (u.step === "ASK_ROLE") {
-    if (id === "role:buy") {
-      track("role_chosen", to, { role: "buyer" });
-      u.draft = {};
-      await wa.sendText(to, "Great 👍 Let's find it.");
-      return askKind(u, "find");
-    }
-    if (id === "role:sell" || id === "role:both") {
-      track("role_chosen", to, { role: id === "role:sell" ? "seller" : "both" });
-      return startProfile(u, "Great 👍 First, let's set up your seller profile. This is what buyers see before they swap numbers with you, so a clean profile gets you more deals.");
+    const next = id === "role:buy" ? "find" : id === "role:sell" ? "sell" : id === "role:both" ? "menu" : null;
+    if (next) {
+      track("role_chosen", to, { role: next === "find" ? "buyer" : next === "sell" ? "seller" : "both" });
+      return startProfile(
+        u,
+        "Great 👍 First, a quick profile. Everyone on Scoutly has one, so people know who they're dealing with before swapping numbers. It also means you're ready the day you sell something.",
+        next,
+      );
     }
     if (/^(menu|hi|hello|hey|start)$/i.test(text)) return showMenu(u, `Hi ${u.name} 👋`);
     return didntGetThat(u);
@@ -467,6 +549,7 @@ async function conversation(m: Incoming): Promise<void> {
       case "menu:main":
         return showMenu(u, "Main menu");
       case "menu:find":
+        if (!u.profile) return startProfile(u, "Before you search, a quick profile. Sellers see it before they swap numbers with you. It takes 1 minute.", "find");
         return askKind(u, "find");
       case "menu:sell":
         return startSell(u);
@@ -491,6 +574,11 @@ async function conversation(m: Incoming): Promise<void> {
       // Typing straight away = "I'm looking for this".
       if (text.length >= 3) {
         if (await refusedAsBanned(u, text)) return;
+        if (!u.profile) {
+          await startProfile(u, "Got it 👍 Before we search, a quick profile. Sellers see it before they swap numbers with you. It takes 1 minute.", "find");
+          u.draft.text = clean(text, 300);
+          return;
+        }
         u.draft = { text: clean(text, 300) };
         return askKind(u, "find");
       }
@@ -727,15 +815,15 @@ async function askRole(u: User): Promise<void> {
   );
 }
 
-async function startProfile(u: User, intro: string): Promise<void> {
-  u.draft = { profile: {} };
+async function startProfile(u: User, intro: string, next: Draft["next"] = "menu"): Promise<void> {
+  u.draft = { profile: {}, next };
   u.step = "PROF_NAME";
   const buttons = u.name ? [{ id: "prof:usename", title: fit(`Use "${u.name}"`, 20) }] : [];
   await wa.sendText(u.phone, intro);
   await prompt(u, () =>
     buttons.length
-      ? wa.sendButtons(u.phone, "*Step 1 of 3:* What name should buyers see?\n\nType your business name (e.g. _Sipho Painters_) or tap below to use your own name.", buttons)
-      : wa.sendText(u.phone, "*Step 1 of 3:* What name should buyers see? Type your business name or your own name."),
+      ? wa.sendButtons(u.phone, "*Step 1 of 3:* What name should people see?\n\nType your business name (e.g. _Sipho Painters_) or tap below to use your own name.", buttons)
+      : wa.sendText(u.phone, "*Step 1 of 3:* What name should people see? Type your business name or your own name."),
   );
 }
 
@@ -744,7 +832,7 @@ async function askProfileAbout(u: User): Promise<void> {
   await prompt(u, () =>
     wa.sendText(
       u.phone,
-      "*Step 2 of 3:* In one or two sentences, what do you sell or offer?\n\nFor example: _Used cars and pickups, all papers in order. Based in Bulawayo, delivery anywhere in Zim._",
+      "*Step 2 of 3:* Tell people about yourself in one or two sentences: what you do, or what you sell or offer.\n\nFor example: _Used cars and pickups, all papers in order. Based in Bulawayo, delivery anywhere in Zim._ or _Teacher in Bulawayo, buying for my family._",
     ),
   );
 }
@@ -754,7 +842,7 @@ async function askProfilePhoto(u: User): Promise<void> {
   await prompt(u, () =>
     wa.sendText(
       u.phone,
-      "*Step 3 of 3:* Send a profile photo 📸\n\nUse your logo, your shop front, or a clear photo of you or your work. Profiles with a real photo get far more swaps.\n\nTap 📎 or 📷 to send it.",
+      "*Step 3 of 3:* Send a profile photo 📸\n\nA clear photo of you, your logo, your shop front or your work. People trust profiles with a real photo, so you get far more swaps.\n\nTap 📎 or 📷 to send it.",
     ),
   );
 }
@@ -767,8 +855,11 @@ async function addProfilePhoto(u: User, mediaId: string): Promise<void> {
 }
 
 function profileCard(u: User, p: Profile): string {
-  const stars = u.verified ? "✅ Verified" : "🆕 New seller";
-  return `*${p.name}*\n📍 ${cityName(u.city)} · ${stars}\n\n${p.about}`;
+  const mine = [...listings.values()].filter((l) => l.owner === u.phone);
+  const count = mine.reduce((n, l) => n + l.ratingCount, 0);
+  const avg = count ? mine.reduce((n, l) => n + l.ratingSum, 0) / count : 0;
+  const rating = count ? `⭐ ${avg.toFixed(1)} (${count})` : "No ratings yet";
+  return `*${p.name}*\n📍 ${cityName(u.city)} · ${u.verified ? "✅ Verified" : "🆕 New member"} · ${rating}\n\n${p.about}`;
 }
 
 async function previewProfile(u: User): Promise<void> {
@@ -777,7 +868,7 @@ async function previewProfile(u: User): Promise<void> {
   u.step = "PROF_CONFIRM";
   const full: Profile = { name: p.name, about: p.about, photo: p.photo };
   await prompt(u, () =>
-    wa.sendButtons(u.phone, `This is what buyers will see:\n\n${profileCard(u, full)}`, [
+    wa.sendButtons(u.phone, `This is what people will see:\n\n${profileCard(u, full)}`, [
       { id: "prof:ok", title: "✅ Looks good" },
       { id: "prof:photo", title: "Change photo" },
       { id: "prof:edit", title: "Edit details" },
@@ -789,18 +880,28 @@ async function saveProfile(u: User): Promise<void> {
   const p = u.draft.profile;
   if (!p?.name || !p.about || !p.photo) return startProfile(u, "Let's finish your profile.");
   const first = u.profile === null;
+  const next = u.draft.next ?? "menu";
+  const keepText = u.draft.text;
   u.profile = { name: p.name, about: p.about, photo: p.photo };
   u.draft = {};
   track("profile_saved", u.phone, { first });
   if (!first) return showMenu(u, "✅ Profile updated.");
-  await wa.sendText(u.phone, "✅ Your seller profile is ready. Now let's list your first item or service.");
-  return startSell(u);
+  if (next === "sell") {
+    await wa.sendText(u.phone, "✅ Your profile is ready. Now let's list your first item or service.");
+    return startSell(u);
+  }
+  if (next === "find") {
+    await wa.sendText(u.phone, "✅ Your profile is ready. Now, what are you looking for?");
+    if (keepText) u.draft.text = keepText;
+    return askKind(u, "find");
+  }
+  return showMenu(u, "✅ Your profile is ready.");
 }
 
 async function showProfile(u: User): Promise<void> {
-  if (!u.profile) return startProfile(u, "You don't have a seller profile yet. Let's set one up. It takes 1 minute.");
+  if (!u.profile) return startProfile(u, "You don't have a profile yet. Let's set one up. It takes 1 minute.");
   u.step = "MENU";
-  await wa.sendButtons(u.phone, `Your seller profile:\n\n${profileCard(u, u.profile)}`, [
+  await wa.sendButtons(u.phone, `Your profile:\n\n${profileCard(u, u.profile)}`, [
     { id: "menu:sell", title: "🏷️ List something" },
     { id: "prof:redo", title: "Edit profile" },
     { id: "menu:main", title: "Main menu" },
@@ -819,7 +920,7 @@ async function showMenu(u: User, greeting: string): Promise<void> {
         { id: "menu:find", title: "🔎 Find something", description: "Items or services. See prices side by side." },
         { id: "menu:sell", title: "🏷️ Sell or offer", description: "List an item or service once. Buyers come to you." },
         { id: "menu:posts", title: "My posts", description: "See, close or mark as sold. Rate people." },
-        { id: "menu:profile", title: "🪪 My seller profile", description: u.profile ? `${fit(u.profile.name, 40)} · tap to view or edit` : "Set it up before you sell." },
+        { id: "menu:profile", title: "🪪 My profile", description: u.profile ? `${fit(u.profile.name, 40)} · tap to view or edit` : "Set it up: name, photo, about you." },
         { id: "menu:credits", title: "My credits", description: `Balance: ${credits(ledger.balance(u.phone))}` },
         { id: "menu:ads", title: "📣 Advertise", description: "Show your business in search results." },
         { id: "menu:city", title: "Change my town", description: `Now: ${cityName(u.city)}` },
@@ -1063,7 +1164,7 @@ async function sendToProviders(u: User, need: Need): Promise<void> {
 // ---------------------------------------------------------------- selling something
 
 async function startSell(u: User): Promise<void> {
-  if (!u.profile) return startProfile(u, "Before you list, let's set up your seller profile. Buyers see it before they swap numbers with you, so it takes 1 minute and gets you more deals.");
+  if (!u.profile) return startProfile(u, "Before you list, let's set up your profile. People see it before they swap numbers with you. It takes 1 minute.", "sell");
   if (activeListingsOf(u.phone).length >= MAX_ACTIVE_LISTINGS) {
     await wa.sendText(u.phone, `You already have ${MAX_ACTIVE_LISTINGS} active listings. Mark one as sold or pause it in *My posts* to add another.`);
     return showMenu(u, "Main menu");

@@ -43,6 +43,10 @@ export const env = {
   POSTHOG_HOST: optional("POSTHOG_HOST") || "https://eu.i.posthog.com",
   ANALYTICS_SALT: optional("ANALYTICS_SALT") || "scoutly",
   MEDIA_DIR: optional("MEDIA_DIR") || "/tmp/scoutly-media",
+  // Supabase: database + photo storage. Without these, everything lives in memory (wiped on redeploy).
+  SUPABASE_URL: optional("SUPABASE_URL").replace(/\/+$/, ""),
+  SUPABASE_SERVICE_ROLE_KEY: optional("SUPABASE_SERVICE_ROLE_KEY"),
+  SUPABASE_BUCKET: optional("SUPABASE_BUCKET") || "scoutly-media",
   // Demo only: seconds before a simulated payment confirms.
   SIMULATED_PAY_SECONDS: Number(optional("SIMULATED_PAY_SECONDS") || "6"),
 };

@@ -167,7 +167,7 @@ test("categories, towns and bundles fit WhatsApp limits", () => {
   }
   for (const c of CITIES) assert.ok(c.name.length <= LIMITS.listRowTitle, c.name);
   for (const b of BUNDLES) assert.ok(Number.isInteger(b.cents) && b.cents >= 200, "smallest bundle is $2 so fees don't eat it");
-  assert.equal(getCategory("cars")?.swapCost, 3, "cars cost more per swap");
+  assert.equal(getCategory("cars")?.swapCost, 1, "launch pricing: every swap costs 1 credit");
 });
 
 test("money parsing", () => {
@@ -205,4 +205,18 @@ test("fit shortens with an ellipsis", () => {
   const cut = fit("Need: a very long description of a job", 24);
   assert.equal(cut.length, 24);
   assert.ok(cut.endsWith("…"));
+});
+
+test("ledger: saved entries restore the same balance after a restart, without double counting", () => {
+  const a = new Ledger();
+  a.welcome("263770000001", 3);
+  a.hold("263770000001", "L1", 1);
+  a.capture("L1");
+  const saved = a.all().map((e) => ({ ...e }));
+  const b = new Ledger();
+  b.load(saved);
+  b.load(saved); // loading twice changes nothing
+  assert.equal(b.balance("263770000001"), 2);
+  assert.equal(b.welcome("263770000001", 3), false, "welcome credits are never given twice, even after a restart");
+  assert.equal(b.isHeld("L1"), false);
 });

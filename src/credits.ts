@@ -26,6 +26,20 @@ export class Ledger {
     return true;
   }
 
+  /** Every entry, oldest first (for saving). */
+  all(): readonly Entry[] {
+    return this.entries;
+  }
+
+  /** Restores saved entries after a restart. Duplicate keys are skipped. */
+  load(saved: Entry[]): void {
+    for (const e of saved) {
+      if (this.keys.has(e.key)) continue;
+      this.keys.add(e.key);
+      this.entries.push({ ...e });
+    }
+  }
+
   balance(phone: string): number {
     return this.entries.filter((e) => e.phone === phone).reduce((sum, e) => sum + e.delta, 0);
   }
