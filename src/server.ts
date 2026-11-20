@@ -152,11 +152,11 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) {
 initState()
   .then(() => app.listen({ port: env.PORT, host: "0.0.0.0" }))
   .then(() => {
-    console.log(`${env.APP_NAME} demo running on port ${env.PORT}`);
+    console.log(`${env.APP_NAME} running on port ${env.PORT}`);
     console.log(`Payments: ${paynowConfigured ? "Paynow TEST MODE" : "SIMULATED (Paynow keys not set)"}`);
     if (!env.WA_APP_SECRET) console.warn("⚠️ WA_APP_SECRET not set: webhook signatures are NOT being checked. Add it before go-live.");
     if (!env.PUBLIC_URL) console.warn("⚠️ No public URL yet: generate a domain in Railway → Settings → Networking (needed for Paynow).");
-    console.log(`Sample listings and ads: ${env.SAMPLE_PROVIDERS ? "ON (demo)" : "OFF"}`);
+    console.log(`Sample listings and ads: ${env.SAMPLE_PROVIDERS ? "ON (test mode, not for real users)" : "OFF"}`);
     console.log(`Analytics: ${env.POSTHOG_KEY ? `PostHog (${env.POSTHOG_HOST})` : "off (no POSTHOG_KEY)"}`);
     void runNumberSetup().catch((err) => console.error("[SETUP] error", err));
   })

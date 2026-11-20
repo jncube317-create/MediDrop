@@ -228,7 +228,7 @@ function seedSamples(): void {
     const id = `AD-${++adSeq}`;
     ads.set(id, { id, owner: a.owner, category: a.category, city: null, text: a.text, photo: demoPhoto(a.photo), status: "LIVE", views: 0, taps: 0, createdAt: Date.now() });
   }
-  console.log(`[DEMO] ${SAMPLE_LISTINGS.length} sample listings and ${SAMPLE_ADS.length} sample ads loaded (SAMPLE_PROVIDERS=false removes them)`);
+  console.log(`[DEMO] ${SAMPLE_LISTINGS.length} sample listings and ${SAMPLE_ADS.length} sample ads loaded (test mode only)`);
 }
 // ---------------------------------------------------------------- saving to Supabase
 

@@ -32,7 +32,8 @@ export const env = {
   ADMIN_PHONE: digitsOnly(optional("ADMIN_PHONE") || optional("STAFF_PHONE")),
   PUBLIC_URL: optional("PUBLIC_URL") || (railwayDomain ? `https://${railwayDomain}` : ""),
   // Sample listings, providers and ads so a one-phone demo works. Set false for real use.
-  SAMPLE_PROVIDERS: optional("SAMPLE_PROVIDERS").toLowerCase() !== "false",
+  // Demo listings and ads are OFF unless SAMPLE_PROVIDERS=true (only the test simulator turns them on).
+  SAMPLE_PROVIDERS: optional("SAMPLE_PROVIDERS").toLowerCase() === "true",
   SAMPLE_REPLY_SECONDS: Number(optional("SAMPLE_REPLY_SECONDS") || "8"),
   PAYNOW_INTEGRATION_ID: optional("PAYNOW_INTEGRATION_ID"),
   PAYNOW_INTEGRATION_KEY: optional("PAYNOW_INTEGRATION_KEY"),

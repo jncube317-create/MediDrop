@@ -182,6 +182,7 @@ async function main(): Promise<void> {
       PUBLIC_URL: "https://scoutly-demo.example",
       SIMULATED_PAY_SECONDS: "1",
       SAMPLE_REPLY_SECONDS: "1",
+      SAMPLE_PROVIDERS: "true", // demo listings exist only in the simulator
       PAYNOW_INTEGRATION_ID: "",
       MEDIA_DIR: "/tmp/scoutly-sim-media",
       POSTHOG_KEY: "",

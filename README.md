@@ -64,12 +64,12 @@ People are a scrambled ID: no phone numbers, names or message text go to PostHog
 (use `LOOKUP`). No key = no tracking.
 
 ## Demo data
-`SAMPLE_PROVIDERS=true` loads sample listings with real photos (BMW 745i $5,500, Nissan NP300 $8,500,
+Demo data is **off** by default. `SAMPLE_PROVIDERS=true` (test simulator only) loads sample listings with real photos (BMW 745i $5,500, Nissan NP300 $8,500,
 Defy combi fridge $520 new, woven mules $12, two steel doors $480 / $420 new), 10 sample service providers
 (painters, mechanics, venue, printing, movers…) and 2 sample ads (Ace Paint Centre, Kudu Car Cover).
 Prices are realistic samples from Nov 2026 research, not real offers. Sample sellers reply by themselves,
 their numbers start with 26300 (never real) and they're marked as samples.
-**Set `SAMPLE_PROVIDERS=false` before real people use it.** Get permission before showing other people's photos publicly.
+**Never set this on the live bot.** Get permission before showing other people's photos publicly.
 
 ## Demo script (2 phones + admin)
 1. Phone A: *hi* → agree → name → Bulawayo → type **car under $9,000** → An item → Cars & bakkies → *9000* → This week → In Bulawayo → Post it.
