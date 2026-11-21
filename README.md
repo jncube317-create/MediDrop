@@ -1,4 +1,6 @@
-# Scoutly – WhatsApp demo
+# Scoutly – WhatsApp bot
+
+> **Current state, decisions and roadmap:** see [`docs/scoutly-knowledge.md`](docs/scoutly-knowledge.md). Rules for Claude: [`CLAUDE.md`](CLAUDE.md). Parts of this README describe the earlier demo flow.
 
 Scoutly links people who are **looking for** something with people who **sell or offer** it:
 cars, fridges, doors, clothes, carpenters, painters, mechanics, venues and more.
@@ -29,7 +31,7 @@ the post goes to matching providers in your town, they **send quotes**, and you 
 price, **up to 3 photos**, your town or all of Zimbabwe. Buyers who already posted (with alerts on) get it instantly.
 Listing score tells sellers what to improve. *Mark as sold* in *My posts*.
 
-**Swapping numbers costs credits on both sides:** 1 credit for most things, 2 for venues, 3 for cars and houses.
+**Swapping numbers costs 1 credit on each side** (every category). Everyone gets 3 welcome credits and +3 free every week; bundles are $1 = 2, $3 = 7, $5 = 13.
 Credits are held while waiting and come back if the swap doesn't happen.
 
 **Advertising:** anyone can create an ad (*📣 Advertise*): category to target, one line, photo, town or nationwide.
