@@ -5,7 +5,7 @@ import { eligible, keywords, level, profileScore, quoteCents, rankItems, rankPro
 import { Ledger } from "../src/credits";
 import { canMove, isStale, moveLead, prettyPhone, chatLink, LEAD_TTL_MS, type Lead } from "../src/leads";
 import {
-  BUNDLES, CATEGORIES, blockedReason, weekKey, CITIES, SAMPLE_ADS, SAMPLE_LISTINGS, SAMPLE_SELLERS, bannedWord, categoriesOf, fit, getCategory, parseDollars,
+  BUNDLES, CATEGORIES, blockedReason, weekKey, wantedBy, CITIES, SAMPLE_ADS, SAMPLE_LISTINGS, SAMPLE_SELLERS, bannedWord, categoriesOf, fit, getCategory, parseDollars,
 } from "../src/data";
 import { LIMITS } from "../src/limits";
 import { existsSync } from "node:fs";
@@ -273,4 +273,13 @@ test("one-message search: reads category, budget, timing and town", () => {
   assert.equal(findBudget("Defy fridge 250l"), undefined, "250l isn't a budget");
   assert.equal(findBudget("2015 Honda Fit"), undefined, "a year isn't a budget");
   assert.equal(findBudget("budget 5k")?.cents, 500000);
+});
+
+test("posts for 'today' close at midnight Harare time, 'this week' at the end of Sunday", () => {
+  const sat10am = Date.parse("2026-11-21T08:00:00Z"); // Saturday 10:00 in Harare
+  assert.equal(new Date(wantedBy("today", sat10am)!).toISOString(), "2026-11-21T22:00:00.000Z");
+  assert.equal(new Date(wantedBy("week", sat10am)!).toISOString(), "2026-11-22T22:00:00.000Z");
+  const mon = Date.parse("2026-11-23T06:00:00Z");
+  assert.equal(new Date(wantedBy("week", mon)!).toISOString(), "2026-11-29T22:00:00.000Z");
+  assert.equal(wantedBy("flexible", sat10am), null);
 });

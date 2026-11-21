@@ -79,6 +79,19 @@ export const WELCOME_CREDITS = 3;
 /** Every week (Monday, Harare time) everyone gets this many free credits, once per week. */
 export const WEEKLY_FREE_CREDITS = 3;
 
+/**
+ * When a post stops being useful: "today" ends at midnight Harare time, "this week" at the end of
+ * Sunday. Null for flexible or a typed date (those use the normal 7-day expiry).
+ */
+export function wantedBy(when: WhenKey, createdAt: number): number | null {
+  const HARARE = 2 * 3600_000;
+  const d = new Date(createdAt + HARARE);
+  const midnight = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1) - HARARE;
+  if (when === "today") return midnight;
+  if (when === "week") return midnight + ((7 - d.getUTCDay()) % 7) * 24 * 3600_000;
+  return null;
+}
+
 /** Monday of the current week in Harare (UTC+2), as YYYY-MM-DD. Used as the weekly top-up key. */
 export function weekKey(now = Date.now()): string {
   const d = new Date(now + 2 * 3600_000);

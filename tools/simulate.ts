@@ -229,7 +229,8 @@ async function main(): Promise<void> {
     check(has(r, CUSTOMER, /asked Busi M\.[\s\S]*1 credit on hold/), "buyer's credit is held while the seller decides");
     await sleep(1300);
     r = flush();
-    check(has(r, CUSTOMER, /connected with Busi M\.\* about the Nissan NP300 single cab \(\$8,500\)[\s\S]*1 credit used\. Balance: 2 credits/), "seller accepts: numbers swapped, credits spent");
+    check(has(r, CUSTOMER, /connected with Busi M\.\*[\s\S]*Nissan NP300 single cab · \$8,500[\s\S]*Wanted: This week[\s\S]*1 credit used\. Balance: 2 credits/), "seller accepts: numbers swapped, credits spent, key facts shown");
+    check(has(r, CUSTOMER, /wa\.me\/263000000012\?text=Hi%20Busi%20M\.%2C%20it's%20Sizwe[^ ]*Scoutly/), "chat link pre-types a hello that says it came from Scoutly");
     check(has(r, CUSTOMER, /found:yes:N-1001/), "asks whether they found what they needed");
     r = await send(CUSTOMER, { reply: "found:yes:N-1001" });
     check(has(r, CUSTOMER, /closed N-1001, so nobody else gets it/), "found it: post closed");

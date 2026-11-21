@@ -64,6 +64,8 @@ export function prettyPhone(phone: string): string {
   return `+${d}`;
 }
 
-export function chatLink(phone: string): string {
-  return `https://wa.me/${phone.replace(/\D/g, "")}`;
+/** Opens a WhatsApp chat with that number. `text` pre-types an opening message the user can send or edit. */
+export function chatLink(phone: string, text?: string): string {
+  const base = `https://wa.me/${phone.replace(/\D/g, "")}`;
+  return text ? `${base}?text=${encodeURIComponent(text)}` : base;
 }

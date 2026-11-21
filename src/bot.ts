@@ -28,6 +28,7 @@ import {
   WELCOME_CREDITS,
   WEEKLY_FREE_CREDITS,
   weekKey,
+  wantedBy,
   WHEN_LABEL,
   bannedWord,
   categoriesOf,
@@ -365,6 +366,12 @@ async function tell(phone: string, body: string): Promise<void> {
 }
 
 /** 550000 → "$5,500"; 52050 → "$520.50". */
+/** "$100" from the saved cents (so a typed "100" still shows as money), else the typed text. */
+function budgetOf(n: { budgetCents?: number | null; budgetText?: string | null }): string | null {
+  if (typeof n.budgetCents === "number") return dollars(n.budgetCents);
+  return n.budgetText ?? null;
+}
+
 function dollars(cents: number): string {
   return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: cents % 100 ? 2 : 0, maximumFractionDigits: 2 })}`;
 }
@@ -1159,7 +1166,7 @@ async function editMenu(u: User, needId: string): Promise<void> {
   const need = needs.get(needId);
   if (!need || need.owner !== u.phone || need.status !== "OPEN") return showMenu(u, "That search has closed. Type what you're looking for to start a new one.");
   const rows = [
-    ...(need.kind === "item" ? [{ id: `edit:budget:${need.id}`, title: "💵 Change budget", description: need.budgetText ? `Now: ${need.budgetText}` : "Now: not set" }] : []),
+    ...(need.kind === "item" ? [{ id: `edit:budget:${need.id}`, title: "💵 Change budget", description: budgetOf(need) ? `Now: ${budgetOf(need)}` : "Now: not set" }] : []),
     need.anywhere
       ? { id: `edit:here:${need.id}`, title: fit(`📍 Only ${cityName(need.city)}`, 24), description: "Now: anywhere in Zimbabwe" }
       : { id: `edit:any:${need.id}`, title: "📍 Search all of Zim", description: `Now: ${cityName(need.city)} only` },
@@ -1358,7 +1365,7 @@ async function showItemCards(u: User, need: Need): Promise<void> {
 
 /** One line showing what we understood, so people can spot a wrong guess: category · budget · town. */
 function searchLine(need: Need): string {
-  return [catName(need.category), need.budgetText ? `up to ${need.budgetText}` : null, need.when !== "flexible" ? whenLabel(need) : null, need.anywhere ? "anywhere in Zim" : cityName(need.city)]
+  return [catName(need.category), budgetOf(need) ? `up to ${budgetOf(need)}` : null, need.when !== "flexible" ? whenLabel(need) : null, need.anywhere ? "anywhere in Zim" : cityName(need.city)]
     .filter(Boolean)
     .join(" · ");
 }
@@ -1592,7 +1599,7 @@ async function buyerInterested(u: User, listingId: string, needId: string | null
   const need = needId ? needs.get(needId) : undefined;
   await wa.sendButtons(
     l.owner,
-    `🙋 *${nameOf(u.phone)} is interested* in your ${fit(l.title, 40)} (${priceLabel(l)})\n💵 Their budget: ${need?.budgetText ?? "not given"}\n⏱ ${need ? whenLabel(need) : "Not given"}\n📍 ${cityName(users.get(u.phone)?.city ?? null)}\n\nAccept to swap numbers. Uses ${credits(cost)} (you have ${ledger.balance(l.owner)}).`,
+    `🙋 *${nameOf(u.phone)} is interested* in your ${fit(l.title, 40)} (${priceLabel(l)})\n💵 Their budget: ${(need && budgetOf(need)) ?? "not given"}\n⏱ ${need ? whenLabel(need) : "Not given"}\n📍 ${cityName(users.get(u.phone)?.city ?? null)}\n\nAccept to swap numbers. Uses ${credits(cost)} (you have ${ledger.balance(l.owner)}).`,
     [
       { id: `sell:yes:${lead.id}`, title: "Accept" },
       { id: `sell:no:${lead.id}`, title: "Decline" },
@@ -1642,7 +1649,7 @@ async function createProviderLead(need: Need, l: Listing): Promise<void> {
   }
   await wa.sendButtons(
     lead.provider,
-    `📣 *New job · ${catName(need.category)}*\n\n"${need.text}"\n💵 Budget: ${need.budgetText ?? "not given"}\n⏱ ${whenLabel(need)}\n📍 ${cityName(need.city)}\n\nSend a quote and we'll show them your profile. You use ${credits(lead.cost)} only if they accept.\nYour balance: ${credits(ledger.balance(lead.provider))}.`,
+    `📣 *New job · ${catName(need.category)}*\n\n"${need.text}"\n💵 Budget: ${budgetOf(need) ?? "not given"}\n⏱ ${whenLabel(need)}\n📍 ${cityName(need.city)}\n\nSend a quote and we'll show them your profile. You use ${credits(lead.cost)} only if they accept.\nYour balance: ${credits(ledger.balance(lead.provider))}.`,
     [
       { id: `lead:yes:${lead.id}`, title: "Send a quote" },
       { id: `lead:no:${lead.id}`, title: "Not for me" },
@@ -1788,14 +1795,33 @@ async function connect(lead: Lead): Promise<void> {
   console.log(`[CONNECT] ${lead.id} (${lead.origin})`);
   track("numbers_swapped", lead.customer, { category: l?.category ?? "", origin: lead.origin, cost: lead.cost });
   const what = l ? (l.kind === "item" ? `the ${fit(l.title, 40)} (${priceLabel(l)})` : catName(l.category)) : "your post";
+  const buyer = nameOf(lead.customer);
+  const seller = nameOf(lead.provider);
+  const wanted = need && need.when !== "flexible" ? whenLabel(need) : null;
+  const budget = need ? budgetOf(need) : null;
+  const town = cityName(need?.city ?? users.get(lead.customer)?.city ?? null);
+
+  // The key facts, so neither side has to scroll back: what, price/budget, when, where.
+  const deal = [
+    `🛍️ ${l ? (l.kind === "item" ? fit(l.title, 60) : catName(l.category)) : "Your post"}${l?.priceCents ? ` · ${priceLabel(l)}` : ""}`,
+    need ? `🔎 They asked for: "${fit(need.text, 80)}"` : null,
+    budget ? `💵 Budget: ${budget}` : null,
+    `⏱ Wanted: ${wanted ?? "flexible"}`,
+    `📍 ${town}`,
+  ].filter(Boolean).join("\n");
+
+  // Pre-typed first message: the other person sees straight away that this came from Scoutly.
+  const item = l ? (l.kind === "item" ? `your ${fit(l.title, 40)}${l.priceCents ? ` (${priceLabel(l)})` : ""}` : `your ${catName(l.category).toLowerCase()} service`) : "your listing";
+  const buyerHello = `Hi ${seller}, it's ${buyer} 👋 I found you on Scoutly about ${item}.${wanted ? ` I need it ${wanted.toLowerCase()}.` : ""} Is it still available?`;
+  const sellerHello = `Hi ${buyer}, it's ${seller} from Scoutly 👋 about ${need ? `your request "${fit(need.text, 60)}"` : what}. When suits you?`;
 
   await wa.sendText(
     lead.customer,
-    `✅ *You're connected with ${nameOf(lead.provider)}* about ${what}\n📞 ${prettyPhone(lead.provider)}\n💬 Chat now: ${chatLink(lead.provider)}\n\nAgree the price before anything changes hands. Meet in a public place, check the item or work, and never pay a deposit before you've seen it.${l?.category === "pharmacy" ? "\n💊 Prescription medicines: take your prescription. The pharmacy must see it before selling." : ""}\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.customer))}.\n${LIABILITY}${l?.sample ? "\n\n(Sample seller for the demo: this number isn't real.)" : ""}`,
+    `✅ *You're connected with ${seller}*\n\n${deal}\n\n📞 ${prettyPhone(lead.provider)}\n💬 Tap to chat (we've typed a hello for you): ${chatLink(lead.provider, buyerHello)}\n\nAgree the price before anything changes hands. Meet in a public place, check the item or work, and never pay a deposit before you've seen it.${l?.category === "pharmacy" ? "\n💊 Prescription medicines: take your prescription. The pharmacy must see it before selling." : ""}\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.customer))}.\n${LIABILITY}${l?.sample ? "\n\n(Sample seller for the demo: this number isn't real.)" : ""}`,
   );
   await tell(
     lead.provider,
-    `✅ *New customer: ${nameOf(lead.customer)}*\nAbout: ${need ? `"${need.text}"` : what}${need?.budgetText ? `\n💵 Budget: ${need.budgetText}` : ""}\n📞 ${prettyPhone(lead.customer)}\n💬 Chat now: ${chatLink(lead.customer)}\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.provider))}.\n${LIABILITY}`,
+    `✅ *New customer: ${buyer}* (via Scoutly)\n\n${deal}\n\n📞 ${prettyPhone(lead.customer)}\n💬 Tap to chat (we've typed a hello for you): ${chatLink(lead.customer, sellerHello)}\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.provider))}.\n${LIABILITY}`,
   );
   if (need) {
     if (need.connections >= MAX_CONNECTIONS_PER_NEED) {
@@ -1926,7 +1952,7 @@ async function showPost(u: User, type: string, postId: string): Promise<void> {
     ];
     await wa.sendButtons(
       u.phone,
-      `*${need.id}* · ${need.status === "OPEN" ? "Open" : need.status === "CLOSED" ? "Closed" : "Expired"}\n🔎 "${need.text}"\n🏷️ ${catName(need.category)} · 💵 ${need.budgetText ?? "no budget"}\n🔔 Alerts ${need.alert ? "on" : "off"}\n🤝 Contacts: ${connected.length ? connected.map((l) => nameOf(l.provider)).join(", ") : "none yet"}`,
+      `*${need.id}* · ${need.status === "OPEN" ? "Open" : need.status === "CLOSED" ? "Closed" : "Expired"}\n🔎 "${need.text}"\n🏷️ ${catName(need.category)} · 💵 ${budgetOf(need) ?? "no budget"}\n🔔 Alerts ${need.alert ? "on" : "off"}\n🤝 Contacts: ${connected.length ? connected.map((l) => nameOf(l.provider)).join(", ") : "none yet"}`,
       buttons,
     );
     return;
@@ -2372,6 +2398,13 @@ setInterval(() => {
     if (ledger.release(lead.id)) void tell(lead.provider, "A customer didn't reply in 48 hours, so your held credits are back.");
   }
   for (const need of needs.values()) {
+    const by = need.status === "OPEN" ? wantedBy(need.when, need.createdAt) : null;
+    if (by !== null && now > by) {
+      void closeNeed(need, "EXPIRED").then(() =>
+        wa.sendText(need.owner, `Your post "${fit(need.text, 50)}" was for ${need.when === "today" ? "today" : "this week"}, so we've closed it and any held credits are back. Still looking? Just type it again.`),
+      );
+      continue;
+    }
     if (need.status === "OPEN" && now - need.createdAt > NEED_TTL_MS) {
       void closeNeed(need, "EXPIRED").then(() => wa.sendText(need.owner, `Your post "${fit(need.text, 50)}" has expired after 7 days. Type MENU to post it again.`));
     }
