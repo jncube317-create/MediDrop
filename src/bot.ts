@@ -51,6 +51,7 @@ import { formatLocalNumber, networkMatches, normalizeZwMobile, toLocalNumber } f
 import { track } from "./analytics";
 import { demoPhoto, savePhoto } from "./media";
 import { dbEnabled, loadTable, upsert, type CreditRow, type Row } from "./store";
+import { understand } from "./parse";
 import type { CarouselCard } from "./limits";
 
 export type Incoming =
@@ -83,6 +84,7 @@ interface Draft {
   when?: WhenKey;
   whenText?: string | null;
   anywhere?: boolean;
+  city?: string; // town named in the search, if different from the user's own
   condition?: Condition | null;
   priceCents?: number | null;
   priceText?: string | null;
@@ -91,6 +93,7 @@ interface Draft {
   bundle?: string;
   profile?: Partial<Profile>;
   next?: "find" | "sell" | "menu"; // where to go after the profile is saved
+  editing?: string; // need being changed from the results (closed and re-run)
 }
 
 /** What buyers see about a seller or service provider. */
@@ -600,6 +603,11 @@ async function conversation(m: Incoming): Promise<void> {
   if (u.step === "BUY_WAIT") return waitingForPayment(to);
 
   if (id.startsWith("buy:")) return startBuy(u, id.slice(4));
+  if (id.startsWith("edit:menu:")) return editMenu(u, id.slice(10));
+  {
+    const m = id.match(/^edit:(budget|cat|any|here):(N-\d+)$/);
+    if (m) return editSearch(u, m[2]!, m[1]!);
+  }
   if (id === "prof:redo") return startProfile(u, "Okay, let's update your profile.");
   if (id === "adnew") return askKind(u, "ad");
   if (id.startsWith("menu:")) {
@@ -609,7 +617,8 @@ async function conversation(m: Incoming): Promise<void> {
         return showMenu(u, "Main menu");
       case "menu:find":
         if (!u.profile) return startProfile(u, "Before you search, a quick profile. Sellers see it before they swap numbers with you. It takes 1 minute.", "find");
-        return askKind(u, "find");
+        u.draft = { mode: "find" };
+        return askFindText(u);
       case "menu:sell":
         return startSell(u);
       case "menu:posts":
@@ -638,9 +647,7 @@ async function conversation(m: Incoming): Promise<void> {
           u.draft.text = clean(text, 300);
           return;
         }
-        u.draft = { text: clean(text, 300) };
-        if (medicineWord(text)) return findMedicine(u);
-        return askKind(u, "find");
+        return quickFind(u, text);
       }
       return didntGetThat(u);
     }
@@ -701,16 +708,14 @@ async function conversation(m: Incoming): Promise<void> {
       u.draft.category = cat.key;
       if (u.draft.mode === "sell") return cat.kind === "item" ? askSellTitle(u) : askSellDesc(u);
       if (u.draft.mode === "ad") return askAdText(u);
-      return u.draft.text ? askBudget(u) : askFindText(u);
+      return u.draft.text ? createNeed(u) : askFindText(u);
     }
 
     // ---- find
     case "FIND_TEXT": {
       if (text.length < 3) return void (await wa.sendText(to, "Please describe it in a few words."));
       if (await refusedAsBanned(u, text)) return;
-      u.draft.text = clean(text, 300);
-      if (medicineWord(text) && u.draft.category !== "pharmacy") return findMedicine(u);
-      return askBudget(u);
+      return quickFind(u, text);
     }
     case "FIND_BUDGET": {
       if (id === "budget:skip") {
@@ -720,6 +725,7 @@ async function conversation(m: Incoming): Promise<void> {
         u.draft.budgetText = clean(text, 40);
         u.draft.budgetCents = parseDollars(text);
       } else return didntGetThat(u);
+      if (u.draft.editing) return createNeed(u);
       return askWhen(u);
     }
     case "FIND_WHEN": {
@@ -972,9 +978,13 @@ async function saveProfile(u: User): Promise<void> {
     return startSell(u);
   }
   if (next === "find") {
-    await wa.sendText(u.phone, "✅ Your profile is ready. Now, what are you looking for?");
-    if (keepText) u.draft.text = keepText;
-    return askKind(u, "find");
+    if (keepText) {
+      await wa.sendText(u.phone, "✅ Your profile is ready. Here's what we found:");
+      return quickFind(u, keepText);
+    }
+    await wa.sendText(u.phone, "✅ Your profile is ready.");
+    u.draft = { mode: "find" };
+    return askFindText(u);
   }
   return showMenu(u, "✅ Your profile is ready.");
 }
@@ -996,7 +1006,7 @@ async function findMedicine(u: User): Promise<void> {
   u.draft.kind = "item";
   u.draft.category = "pharmacy";
   await wa.sendText(u.phone, `💊 We'll show you *licensed pharmacies* for this. For prescription medicines, take your prescription with you: the pharmacy must see it before selling.`);
-  return askBudget(u);
+  return createNeed(u);
 }
 
 async function askPharmacyDetails(u: User): Promise<void> {
@@ -1098,7 +1108,97 @@ async function askCategory(u: User): Promise<void> {
 async function askFindText(u: User): Promise<void> {
   u.step = "FIND_TEXT";
   const cat = getCategory(u.draft.category ?? "");
-  await prompt(u, () => wa.sendText(u.phone, `Describe what you're looking for in a few words.\n\nFor example: _${cat?.example ?? "what you need"}_`));
+  await prompt(u, () =>
+    wa.sendText(
+      u.phone,
+      cat
+        ? `Describe what you're looking for in a few words.\n\nFor example: _${cat.example}_`
+        : "What are you looking for? Say it all in *one message*: what, budget, and when if it matters.\n\nFor example:\n• _pre-loved fridge, budget $100_\n• _Toyota Vitz under $4,000_\n• _plumber for a leaking geyser today_",
+    ),
+  );
+}
+
+/**
+ * One message in, results out: reads the item, budget, timing and town from the text and posts
+ * straight away. Only asks for the category if it really can't tell.
+ */
+async function quickFind(u: User, raw: string): Promise<void> {
+  const text = clean(raw, 300);
+  const got = understand(text, CITIES);
+  const keepCategory = u.draft.category; // picked from the category list before typing
+  u.draft = {
+    mode: "find",
+    text,
+    budgetCents: got.budgetCents ?? null,
+    budgetText: got.budgetText ?? null,
+    when: got.when ?? "flexible",
+    whenText: got.whenText ?? null,
+    anywhere: got.anywhere ?? false,
+    ...(got.city && got.city !== u.city ? { city: got.city } : {}),
+  };
+  track("search_understood", u.phone, { category: got.category ?? keepCategory ?? "unknown", budget: got.budgetCents !== undefined, when: got.when ?? "none" });
+  if (medicineWord(text)) return findMedicine(u);
+  const cat = getCategory(keepCategory ?? got.category ?? "");
+  if (!cat) return askKind(u, "find");
+  u.draft.category = cat.key;
+  u.draft.kind = cat.kind;
+  return createNeed(u);
+}
+
+// ---------------------------------------------------------------- editing a search after the results
+
+async function searchOptions(u: User, need: Need, intro: string): Promise<void> {
+  await wa.sendButtons(u.phone, intro, [
+    { id: `alert:on:${need.id}`, title: "🔔 Alert me" },
+    { id: `edit:menu:${need.id}`, title: "✏️ Edit search" },
+    { id: "menu:credits", title: "💳 My credits" },
+  ]);
+}
+
+async function editMenu(u: User, needId: string): Promise<void> {
+  const need = needs.get(needId);
+  if (!need || need.owner !== u.phone || need.status !== "OPEN") return showMenu(u, "That search has closed. Type what you're looking for to start a new one.");
+  const rows = [
+    ...(need.kind === "item" ? [{ id: `edit:budget:${need.id}`, title: "💵 Change budget", description: need.budgetText ? `Now: ${need.budgetText}` : "Now: not set" }] : []),
+    need.anywhere
+      ? { id: `edit:here:${need.id}`, title: fit(`📍 Only ${cityName(need.city)}`, 24), description: "Now: anywhere in Zimbabwe" }
+      : { id: `edit:any:${need.id}`, title: "📍 Search all of Zim", description: `Now: ${cityName(need.city)} only` },
+    { id: `edit:cat:${need.id}`, title: "🏷️ Wrong category?", description: `Now: ${catName(need.category)}` },
+    { id: "menu:find", title: "🔁 New search" },
+    { id: "menu:main", title: "Main menu" },
+  ];
+  await wa.sendList(u.phone, `Change your search "${fit(need.text, 50)}":`, "Options", rows, "Edit search");
+}
+
+/** Closes the old search and runs it again with the change. Held credits on the old one come back. */
+async function editSearch(u: User, needId: string, what: string): Promise<void> {
+  const need = needs.get(needId);
+  if (!need || need.owner !== u.phone || need.status !== "OPEN") return showMenu(u, "That search has closed. Type what you're looking for to start a new one.");
+  const base: Draft = {
+    mode: "find",
+    kind: need.kind,
+    category: need.category,
+    text: need.text,
+    budgetCents: need.budgetCents,
+    budgetText: need.budgetText,
+    when: need.when,
+    whenText: need.whenText,
+    anywhere: need.anywhere,
+    ...(need.city !== u.city ? { city: need.city } : {}),
+    editing: need.id,
+  };
+  track("search_edited", u.phone, { what });
+  if (what === "budget") {
+    u.draft = base;
+    u.step = "FIND_BUDGET";
+    return prompt(u, () => wa.sendButtons(u.phone, "Type your new budget, e.g. _$150_.", [{ id: "budget:skip", title: "No budget" }]));
+  }
+  if (what === "cat") {
+    u.draft = { ...base, category: undefined };
+    return askKind(u, "find");
+  }
+  u.draft = { ...base, anywhere: what === "any" };
+  return createNeed(u);
 }
 
 async function askBudget(u: User): Promise<void> {
@@ -1160,18 +1260,22 @@ async function findSummary(u: User): Promise<void> {
 async function createNeed(u: User): Promise<void> {
   const d = u.draft;
   const cat = getCategory(d.category ?? "");
-  if (!cat || !d.text || !d.when || !u.city) return showMenu(u, "Something went missing. Let's start again.");
+  if (!cat || !d.text || !u.city) return showMenu(u, "Something went missing. Let's start again.");
+  if (d.editing) {
+    const old = needs.get(d.editing);
+    if (old && old.owner === u.phone && old.status === "OPEN") await closeNeed(old, "CLOSED");
+  }
   const need: Need = {
     id: `N-${++needSeq}`,
     owner: u.phone,
     kind: cat.kind,
     category: cat.key,
-    city: u.city,
+    city: d.city ?? u.city,
     anywhere: d.anywhere ?? false,
     text: d.text,
     budgetText: d.budgetText ?? null,
     budgetCents: d.budgetCents ?? null,
-    when: d.when,
+    when: d.when ?? "flexible",
     whenText: d.whenText ?? null,
     alert: false,
     createdAt: Date.now(),
@@ -1205,15 +1309,11 @@ async function showItemCards(u: User, need: Need): Promise<void> {
 
   if (found.length === 0) {
     if (ad) await sendAdCard(u.phone, ad);
-    await wa.sendButtons(
-      u.phone,
-      `✅ Posted (${need.id}).\n\nNobody is selling this ${need.anywhere ? "on Scoutly" : `in ${cityName(need.city)}`} yet. Want a message as soon as someone lists it?`,
-      [
-        { id: `alert:on:${need.id}`, title: "Yes, alert me" },
-        { id: `alert:off:${need.id}`, title: "No thanks" },
-      ],
+    return searchOptions(
+      u,
+      need,
+      `🔎 ${searchLine(need)}\n\nNobody is selling this ${need.anywhere ? "on Scoutly" : `in ${cityName(need.city)}`} yet. Tap *Alert me* and we'll message you as soon as someone lists it.`,
     );
-    return;
   }
 
   const cards: CarouselCard[] = found.map((l) => ({
@@ -1249,15 +1349,18 @@ async function showItemCards(u: User, need: Need): Promise<void> {
       "Matches",
     );
   }
-  await wa.sendButtons(
-    u.phone,
-    `✅ Posted (${need.id}).\n\nTap *I'm interested* on any card and we'll ask the seller. Swapping numbers uses ${credits(cost)} (you have ${ledger.balance(u.phone)}).\n\nWant a message when new matches are listed?`,
-    [
-      { id: `alert:on:${need.id}`, title: "Alert me" },
-      { id: `alert:off:${need.id}`, title: "No thanks" },
-      { id: "menu:main", title: "Main menu" },
-    ],
+  await searchOptions(
+    u,
+    need,
+    `🔎 ${searchLine(need)}\n\nTap *I'm interested* on a card and we'll ask the seller. Swapping numbers uses ${credits(cost)} (you have ${ledger.balance(u.phone)}).`,
   );
+}
+
+/** One line showing what we understood, so people can spot a wrong guess: category · budget · town. */
+function searchLine(need: Need): string {
+  return [catName(need.category), need.budgetText ? `up to ${need.budgetText}` : null, need.when !== "flexible" ? whenLabel(need) : null, need.anywhere ? "anywhere in Zim" : cityName(need.city)]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 async function sendAdCard(to: string, ad: Ad): Promise<void> {
@@ -1279,6 +1382,7 @@ async function sendToProviders(u: User, need: Need): Promise<void> {
   }
   if (ad) await sendAdCard(u.phone, ad);
   for (const l of matches) await createProviderLead(need, l);
+  if (matches.length === 0) await searchOptions(u, need, `🔎 ${searchLine(need)}\n\nTap *Alert me* to hear when someone joins, or *Edit search* if we got something wrong.`);
 }
 
 // ---------------------------------------------------------------- selling something

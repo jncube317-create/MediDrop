@@ -147,7 +147,7 @@ async function onboard(phone: string, name: string, role: "buy" | "sell" = "buy"
   check(has(r, phone, new RegExp(`\\[photo [a-f0-9-]{36}\\.jpg\\][\\s\\S]*This is what people will see[\\s\\S]*\\*${name}\\*[\\s\\S]*New member · No ratings yet`)) && has(r, phone, /prof:ok/), `${name}: profile preview shows the photo, name, rating and description`);
   r = await send(phone, { reply: "prof:ok" });
   if (role === "buy") {
-    check(has(r, phone, /profile is ready[\s\S]*what are you looking for/) && has(r, phone, /kind:item/), `${name}: buyer's profile saved, straight into searching`);
+    check(has(r, phone, /profile is ready/) && has(r, phone, /What are you looking for\? Say it all in \*one message\*/), `${name}: buyer's profile saved, straight into a one-message search`);
     return send(phone, { text: "MENU" });
   }
   check(has(r, phone, /profile is ready[\s\S]*first item or service/) && has(r, phone, /kind:item/), `${name}: seller's profile saved, straight into listing`);
@@ -155,15 +155,19 @@ async function onboard(phone: string, name: string, role: "buy" | "sell" = "buy"
 }
 
 /** Posts a need from the menu, start to finish. */
+/** One-message search, like a real person types it. Taps the category only if the bot asks. */
 async function post(phone: string, o: { text: string; kind: "item" | "service"; cat: string; budget?: string; when: string; date?: string; where?: "city" | "any" }, wait = 400): Promise<Sent[]> {
-  await send(phone, { text: o.text });
-  await send(phone, { reply: `kind:${o.kind}` });
-  await send(phone, { reply: `cat:${o.cat}` });
-  await send(phone, o.budget ? { text: o.budget } : { reply: "budget:skip" });
-  await send(phone, { reply: `when:${o.when}` });
-  if (o.date) await send(phone, { text: o.date });
-  await send(phone, { reply: `where:${o.where ?? "city"}` });
-  return send(phone, { reply: "need:post" }, wait);
+  const extra = [
+    o.budget && !o.text.includes(o.budget) ? `budget ${o.budget}` : "",
+    o.when === "today" ? "today" : o.when === "week" ? "this week" : o.when === "date" && o.date ? `on ${o.date}` : "",
+    o.where === "any" ? "anywhere in Zim" : "",
+  ].filter(Boolean).join(", ");
+  let r = await send(phone, { text: extra ? `${o.text}, ${extra}` : o.text }, wait);
+  if (has(r, phone, /kind:item/)) {
+    await send(phone, { reply: `kind:${o.kind}` });
+    r = await send(phone, { reply: `cat:${o.cat}` }, wait);
+  }
+  return r;
 }
 
 async function main(): Promise<void> {
@@ -254,7 +258,7 @@ async function main(): Promise<void> {
     await send(BUYER2, { text: "MENU" });
     r = await post(BUYER2, { text: "fridge", kind: "item", cat: "appliances", budget: "$350", when: "flexible" });
     check(has(r, BUYER2, /\[photo fridge\.jpg\][\s\S]*Defy combi fridge[\s\S]*\$520 · New/), "one match comes as a single picture card (new Defy fridge)");
-    r = await send(BUYER2, { reply: "alert:on:N-1002" });
+    r = await send(BUYER2, { reply: "alert:on:N-1003" });
     check(has(r, BUYER2, /We'll message you when a new match/), "alerts are opt-in");
 
     await onboard(PROVIDER, "Joe", "sell");
@@ -277,8 +281,8 @@ async function main(): Promise<void> {
     check(has(r, PROVIDER, /\[photo [a-f0-9-]{36}\.jpg\][\s\S]*Check your listing[\s\S]*Pre-loved · good[\s\S]*\$300\n[\s\S]*Listing score: 80%/), "summary shows the seller's photo and a listing score");
     r = await send(PROVIDER, { reply: "list:post" });
     check(has(r, PROVIDER, /You're listed/), "listed");
-    const alertCard = option(r, BUYER2, /^int:O-\d+:N-1002/);
-    check(has(r, BUYER2, /New match\* for your post "fridge"[\s\S]*Hisense fridge 200L[\s\S]*\$300 · Pre-loved/) && Boolean(alertCard), "buyer with alerts gets the new fridge instantly");
+    const alertCard = option(r, BUYER2, /^int:O-\d+:N-1003/);
+    check(has(r, BUYER2, /New match\* for your post "fridge[\s\S]*Hisense fridge 200L[\s\S]*\$300 · Pre-loved/) && Boolean(alertCard), "buyer with alerts gets the new fridge instantly");
 
     // ---- buyer interested → real seller accepts → swap
     r = await send(BUYER2, { reply: alertCard });
@@ -323,8 +327,8 @@ async function main(): Promise<void> {
 
     // ---- stars only rating
     await send(BUYER2, { reply: "menu:posts" });
-    await send(BUYER2, { reply: "post:need:N-1003" });
-    r = await send(BUYER2, { reply: "rate:N-1003" });
+    await send(BUYER2, { reply: "post:need:N-1004" });
+    r = await send(BUYER2, { reply: "rate:N-1004" });
     r = await send(BUYER2, { reply: option(r, BUYER2, /^rating:L\d+:5/) });
     check(has(r, PROVIDER, /rated you 5\/5/), "rating saved and seller told");
 
@@ -350,8 +354,8 @@ async function main(): Promise<void> {
     check(has(r, CUSTOMER, /didn't get that/), "only the admin can approve ads");
 
     // ---- admin commands
-    r = await send(ADMIN, { text: "lookup N-1003" });
-    check(has(r, ADMIN, /N-1003[\s\S]*Rudo \+263 78 444 4444[\s\S]*CONNECTED: Joe \+263 78 222 2222/), "LOOKUP shows both sides' numbers");
+    r = await send(ADMIN, { text: "lookup N-1004" });
+    check(has(r, ADMIN, /N-1004[\s\S]*Rudo \+263 78 444 4444[\s\S]*CONNECTED: Joe \+263 78 222 2222/), "LOOKUP shows both sides' numbers");
     r = await send(ADMIN, { text: "GRANT 0771234567 5" });
     check(has(r, ADMIN, /Gave 5 credits to Sizwe/) && has(r, CUSTOMER, /received 5 credits/), "GRANT tops up credits");
     r = await send(ADMIN, { text: "verify 0782222222" });
@@ -369,6 +373,25 @@ async function main(): Promise<void> {
     await sleep(2500);
     r = flush();
     check(has(r, BUYER2, /Payment received[\s\S]*\+2 credits/), "credits added only after payment confirms");
+
+    // ---- one-message search (tester feedback): no repeat questions, quick edits after the results
+    r = await send(CUSTOMER, { text: "I'm looking for a pre-loved fridge with a budget of $100" });
+    check(!has(r, CUSTOMER, /kind:item/) && !has(r, CUSTOMER, /What's your budget/) && has(r, CUSTOMER, /Fridges & appliances · up to \$100 · Bulawayo/), "one message is enough: category and budget read from the text");
+    let edit = option(r, CUSTOMER, /^edit:menu:N-\d+/);
+    r = await send(CUSTOMER, { reply: edit });
+    check(has(r, CUSTOMER, /edit:budget:/) && has(r, CUSTOMER, /edit:any:/) && has(r, CUSTOMER, /edit:cat:/), "Edit search offers budget, town and category");
+    r = await send(CUSTOMER, { reply: option(r, CUSTOMER, /^edit:any:N-\d+/) });
+    check(has(r, CUSTOMER, /up to \$100 · anywhere in Zim/), "search all of Zimbabwe re-runs the search");
+    edit = option(r, CUSTOMER, /^edit:menu:N-\d+/);
+    r = await send(CUSTOMER, { reply: edit });
+    await send(CUSTOMER, { reply: option(r, CUSTOMER, /^edit:budget:N-\d+/) });
+    r = await send(CUSTOMER, { text: "$600" });
+    check(has(r, CUSTOMER, /Defy combi fridge/) && has(r, CUSTOMER, /up to \$600/), "changing the budget re-runs the search");
+    r = await send(CUSTOMER, { text: "something nice for my mom" });
+    check(has(r, CUSTOMER, /kind:item/) && has(r, CUSTOMER, /kind:service/), "only asks the category when it can't tell");
+    await send(CUSTOMER, { reply: "kind:item" });
+    r = await send(CUSTOMER, { reply: "cat:fashion" });
+    check(has(r, CUSTOMER, /Clothes & shoes · Bulawayo/) && !has(r, CUSTOMER, /What's your budget/), "after picking the category it goes straight to results");
 
     // ---- menu works in any capitals, unknown taps re-prompt
     r = await send(CUSTOMER, { text: "MeNu" });

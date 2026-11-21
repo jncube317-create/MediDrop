@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { understand, guessCategory, findBudget } from "../src/parse";
 import assert from "node:assert/strict";
 import { eligible, keywords, level, profileScore, quoteCents, rankItems, rankProviders, type ListingLike, type NeedLike } from "../src/match";
 import { Ledger } from "../src/credits";
@@ -250,4 +251,26 @@ test("a post still matches a listing put in the wrong category (fridge under Fur
   assert.ok(!eligible(need, sofa), "filler words like pre-loved/budget don't cause matches");
   assert.ok(!eligible(need, { ...fridge, kind: "service", title: "Fridge repairs" }), "a fridge repair service isn't a fridge for sale");
   assert.ok(eligible({ ...need, text: "need fridges" }, fridge), "plural fridges matches fridge");
+});
+
+test("one-message search: reads category, budget, timing and town", () => {
+  const towns = [{ key: "byo", name: "Bulawayo" }, { key: "hre", name: "Harare" }, { key: "other", name: "Other" }];
+  const a = understand("I'm looking for a pre-loved fridge with a budget of $100", towns);
+  assert.equal(a.category, "appliances");
+  assert.equal(a.budgetCents, 10000);
+  const b = understand("Toyota Vitz under 4,000 usd in Harare urgently", towns);
+  assert.deepEqual([b.category, b.budgetCents, b.city, b.when], ["cars", 400000, "hre", "today"]);
+  assert.equal(understand("plumber for a leaking geyser this week", towns).category, "plumbing");
+  assert.equal(understand("plumber for a leaking geyser this week", towns).when, "week");
+  assert.equal(understand("3 bedroom house to rent in Hillside, max $500", towns).category, "property");
+  assert.equal(understand("3 bedroom house to rent in Hillside, max $500", towns).budgetCents, 50000);
+  assert.equal(understand("venue for 40 people on Sat 20 Dec", towns).when, "date");
+  assert.equal(understand("venue for 40 people on Sat 20 Dec", towns).category, "events");
+  assert.equal(understand("cheap laptop anywhere in zim", towns).anywhere, true);
+  assert.equal(guessCategory("fix my fridge"), "other", "a repair job is a service, not a fridge for sale");
+  assert.equal(guessCategory("car service and brakes"), "mechanic");
+  assert.equal(guessCategory("something nice for my mom"), undefined, "unclear: ask");
+  assert.equal(findBudget("Defy fridge 250l"), undefined, "250l isn't a budget");
+  assert.equal(findBudget("2015 Honda Fit"), undefined, "a year isn't a budget");
+  assert.equal(findBudget("budget 5k")?.cents, 500000);
 });
