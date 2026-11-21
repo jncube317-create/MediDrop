@@ -7,6 +7,7 @@ export interface NeedLike {
   anywhere: boolean; // "anywhere in Zimbabwe"
   text: string;
   budgetCents: number | null;
+  kind?: string; // "item" or "service" (lets a wrongly-categorised post still match)
 }
 
 export interface ListingLike {
@@ -22,31 +23,43 @@ export interface ListingLike {
   priceCents: number | null;
   ratingSum: number;
   ratingCount: number;
+  kind?: string;
 }
 
 const STOPWORDS = new Set([
   "the", "and", "for", "with", "need", "want", "looking", "someone", "who", "can", "fix", "please", "help",
   "my", "a", "an", "to", "of", "in", "on", "at", "is", "it", "i", "me", "we", "our", "your", "you", "from",
   "this", "that", "some", "any", "new", "used", "good", "cheap", "urgent", "today", "week", "under", "around",
-  "buy", "sell", "selling", "ngiyacela", "please",
+  "buy", "sell", "selling", "ngiyacela", "please", "pre", "loved", "preloved", "second", "hand", "secondhand",
+  "budget", "sale", "price", "condition", "excellent", "brand", "working", "quality", "affordable", "nice",
+  "big", "small", "usd", "dollars", "negotiable", "neg", "very", "still", "like", "have", "has", "one",
 ]);
+
+/** "fridges" and "fridge" should match: drop a plural s (not "ss", e.g. "glass"). */
+const stem = (w: string) => (w.length > 4 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w);
 
 /** Lower-case words of 3+ letters, minus common filler words. */
 export function keywords(text: string): string[] {
   const words = text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
-  return [...new Set(words.filter((w) => w.length >= 3 && !STOPWORDS.has(w) && !/^\d+$/.test(w)))];
+  return [...new Set(words.filter((w) => w.length >= 3 && !STOPWORDS.has(w) && !/^\d+$/.test(w)).map(stem))];
 }
 
 export function averageRating(o: Pick<ListingLike, "ratingSum" | "ratingCount">): number {
   return o.ratingCount === 0 ? 0 : o.ratingSum / o.ratingCount;
 }
 
-/** Can this listing be shown for this need at all? Same category, live, not yours, reachable city. */
+/**
+ * Can this listing be shown for this need at all? Live, not yours, reachable city, and either the same
+ * category or (when someone picked the wrong category, e.g. a fridge under Furniture) the same kind
+ * with a shared real keyword such as "fridge".
+ */
 export function eligible(need: NeedLike, l: ListingLike): boolean {
   if (!l.active || l.sold) return false;
   if (l.owner === need.owner) return false;
-  if (l.category !== need.category) return false;
-  return need.anywhere || l.nationwide || l.city === need.city;
+  if (!(need.anywhere || l.nationwide || l.city === need.city)) return false;
+  if (l.category === need.category) return true;
+  const sameKind = need.kind !== undefined && need.kind === l.kind;
+  return sameKind && overlap(need, l) >= 1;
 }
 
 /** Shared words between the post and the listing (0-3). */

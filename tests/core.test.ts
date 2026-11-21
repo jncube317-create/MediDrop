@@ -231,17 +231,23 @@ test("input guard: links, contact details, code, illegal goods and medicines are
   for (const t of ["Toyota Vitz under $4,500", "Plumber in Bulawayo this week", "Fuel injection pump for Hilux", "2015 Honda Fit 1.3", "Fridge 350L $520", "Samsung tablet 10 inch", "Budget 5 500 USD", "MENU"]) assert.equal(kind(t), null, t);
 });
 
-test("weekly free credits: top up to 3 once a week, never above, never twice", () => {
+test("weekly free credits: +3 for everyone once a week, never twice in the same week", () => {
   const l = new Ledger();
   l.welcome("263770000009", 3);
-  assert.equal(l.weekly("263770000009", 3, "2026-11-23"), 0, "already has 3: nothing added");
-  l.hold("263770000009", "L9", 1);
-  l.capture("L9");
-  l.hold("263770000009", "L10", 1);
-  l.capture("L10");
-  assert.equal(l.weekly("263770000009", 3, "2026-11-30"), 2, "tops 1 back up to 3");
-  assert.equal(l.weekly("263770000009", 3, "2026-11-30"), 0, "only once per week");
-  assert.equal(l.balance("263770000009"), 3);
+  assert.equal(l.weekly("263770000009", 3, "2026-11-23"), 3);
+  assert.equal(l.weekly("263770000009", 3, "2026-11-23"), 0, "only once per week");
+  assert.equal(l.weekly("263770000009", 3, "2026-11-30"), 3, "again next week");
+  assert.equal(l.balance("263770000009"), 9);
   assert.equal(weekKey(Date.parse("2026-11-20T10:00:00Z")), "2026-11-16", "Friday belongs to Monday's week");
   assert.equal(weekKey(Date.parse("2026-11-22T22:30:00Z")), "2026-11-23", "Sunday 22:30 UTC is already Monday in Harare");
+});
+
+test("a post still matches a listing put in the wrong category (fridge under Furniture)", () => {
+  const need = { owner: "z", category: "appliances", city: "byo", anywhere: false, text: "I'm looking for a pre-loved fridge with a budget of $100", budgetCents: null, kind: "item" };
+  const fridge = { id: "O-531", owner: "j", category: "furniture", city: "byo", nationwide: false, title: "Defy fridge 250l", text: "", active: true, sold: false, priceCents: 7500, ratingSum: 0, ratingCount: 0, kind: "item" };
+  const sofa = { ...fridge, id: "sofa", title: "Pre-loved sofa, good condition, budget price" };
+  assert.ok(eligible(need, fridge), "shared word 'fridge' crosses categories");
+  assert.ok(!eligible(need, sofa), "filler words like pre-loved/budget don't cause matches");
+  assert.ok(!eligible(need, { ...fridge, kind: "service", title: "Fridge repairs" }), "a fridge repair service isn't a fridge for sale");
+  assert.ok(eligible({ ...need, text: "need fridges" }, fridge), "plural fridges matches fridge");
 });

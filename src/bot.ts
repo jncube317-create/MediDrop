@@ -477,13 +477,13 @@ async function conversation(m: Incoming): Promise<void> {
     await wa.sendText(to, "Your unfinished post timed out, so we've cleared it.");
   }
 
-  // ---- weekly free credits: once a week, top back up to 3 (never stacks)
+  // ---- weekly free credits: 3 for everyone, once a week (first message of the week, from Monday)
   if (u.city && u.lastWeekly !== weekKey()) {
     u.lastWeekly = weekKey();
     const added = ledger.weekly(u.phone, WEEKLY_FREE_CREDITS, u.lastWeekly);
     if (added > 0) {
       track("weekly_credits", to, { added });
-      await wa.sendText(to, `🎁 Your free weekly credits are here: you now have *${credits(ledger.balance(to))}*. They top back up to ${WEEKLY_FREE_CREDITS} every Monday.`);
+      await wa.sendText(to, `🎁 Your ${WEEKLY_FREE_CREDITS} free weekly credits are here. You now have *${credits(ledger.balance(to))}*. You get ${WEEKLY_FREE_CREDITS} more every Monday.`);
     }
   }
 
@@ -1198,7 +1198,7 @@ function pickAd(category: string, city: string): Ad | null {
 }
 
 async function showItemCards(u: User, need: Need): Promise<void> {
-  const found = rankItems(need, [...listings.values()].filter((l) => l.kind === "item"), CARDS_PER_RESULT);
+  const found = rankItems({ ...need, kind: "item" }, [...listings.values()].filter((l) => l.kind === "item"), CARDS_PER_RESULT);
   const ad = pickAd(need.category, need.city);
   const cost = costOf(need.category);
   track(found.length ? "cards_shown" : "post_no_match", u.phone, { category: need.category, count: found.length, sponsored: Boolean(ad) });
@@ -1265,7 +1265,7 @@ async function sendAdCard(to: string, ad: Ad): Promise<void> {
 }
 
 async function sendToProviders(u: User, need: Need): Promise<void> {
-  const matches = rankProviders(need, [...listings.values()].filter((l) => l.kind === "service"), new Set(), LEADS_PER_NEED);
+  const matches = rankProviders({ ...need, kind: "service" }, [...listings.values()].filter((l) => l.kind === "service"), new Set(), LEADS_PER_NEED);
   const people = getCategory(need.category)?.people ?? "people";
   const ad = pickAd(need.category, need.city);
   track(matches.length ? "leads_sent" : "post_no_match", u.phone, { category: need.category, count: matches.length });
@@ -1426,7 +1426,7 @@ async function createListing(u: User): Promise<void> {
 
   // Open posts from before this listing existed.
   const open = [...needs.values()]
-    .filter((n) => n.status === "OPEN" && n.category === l.category && n.connections < MAX_CONNECTIONS_PER_NEED && eligible(n, l))
+    .filter((n) => n.status === "OPEN" && n.connections < MAX_CONNECTIONS_PER_NEED && eligible({ ...n, kind: getCategory(n.category)?.kind }, l))
     .sort((x, y) => y.createdAt - x.createdAt)
     .slice(0, 5);
   if (l.kind === "item") {
@@ -2042,7 +2042,7 @@ async function showCredits(u: User): Promise<void> {
   await prompt(u, () =>
     wa.sendList(
       u.phone,
-      `💳 You have *${credits(ledger.balance(u.phone))}*.\n\nA number swap uses 1 credit from each side. Held credits come back if a swap doesn't happen. Ads use ${credits(AD_TAP_COST)} per tap.\n\n🎁 Free: every Monday your credits top back up to ${WEEKLY_FREE_CREDITS} if you have fewer. Need more? Buy a bundle:`,
+      `💳 You have *${credits(ledger.balance(u.phone))}*.\n\nA number swap uses 1 credit from each side. Held credits come back if a swap doesn't happen. Ads use ${credits(AD_TAP_COST)} per tap.\n\n🎁 Free: everyone gets ${WEEKLY_FREE_CREDITS} credits every Monday. Need more? Buy a bundle:`,
       "Buy credits",
       BUNDLES.map((b) => ({ id: `buy:${b.key}`, title: `${credits(b.credits)} · ${formatUsd(b.cents)}`, description: `${formatUsd(Math.round(b.cents / b.credits))} per credit` })),
       "Bundles",

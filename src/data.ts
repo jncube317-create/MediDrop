@@ -76,7 +76,7 @@ export const BUNDLES: Bundle[] = [
 ];
 
 export const WELCOME_CREDITS = 3;
-/** Every week (Monday, Harare time) free credits top back up to this, once. Never stacks above it. */
+/** Every week (Monday, Harare time) everyone gets this many free credits, once per week. */
 export const WEEKLY_FREE_CREDITS = 3;
 
 /** Monday of the current week in Harare (UTC+2), as YYYY-MM-DD. Used as the weekly top-up key. */
