@@ -394,6 +394,12 @@ async function main(): Promise<void> {
     r = await send(CUSTOMER, { reply: "cat:fashion" });
     check(has(r, CUSTOMER, /Clothes & shoes · Bulawayo/) && !has(r, CUSTOMER, /What's your budget/), "after picking the category it goes straight to results");
 
+    // ---- How it works explains credits and number-sharing consent
+    r = await send(CUSTOMER, { reply: "menu:help" });
+    check(has(r, CUSTOMER, /How credits work[\s\S]*1 credit = 1 number swap[\s\S]*on hold[\s\S]*you get it back[\s\S]*\$1 = 2 credits · \$3 = 7 credits · \$5 = 13 credits/), "How it works explains credits, holds, refunds and bundles");
+    check(has(r, CUSTOMER, /share your phone number with another person \*only when you both agree\*/), "How it works states the number-sharing consent");
+    check(!has(r, CUSTOMER, /3 for cars/), "no outdated car pricing");
+
     // ---- menu works in any capitals, unknown taps re-prompt
     r = await send(CUSTOMER, { text: "MeNu" });
     check(has(r, CUSTOMER, /menu:find/), "MENU works in any capitals");

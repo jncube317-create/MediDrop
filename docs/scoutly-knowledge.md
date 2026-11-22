@@ -152,6 +152,7 @@ Automatic admin alerts: blocked posts, medicine listing attempts, reports, new a
 | 20–21 Nov | Bundles **$1 = 2, $3 = 7, $5 = 13** credits; **3 free credits every week** (stacking) |
 | 21 Nov | **One-message search** (tester feedback: too many steps, compare with Facebook Marketplace) |
 | 21 Nov | Swap message shows the key facts; chat link pre-types a Scoutly hello; "today" and "this week" posts close when their time passes |
+| 22 Nov | "How it works" rewritten to explain credits clearly; sign-up consent, rules and How it works state that numbers are shared **only when both people agree** |
 | 21 Nov | **Price comparison stays core.** Plan: shops upload prices; Scoutly owns one photo per product; start with one category |
 
 ## 5. Next (agreed or proposed, not yet built)

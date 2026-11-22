@@ -869,7 +869,7 @@ async function conversation(m: Incoming): Promise<void> {
 async function askConsent(to: string): Promise<void> {
   await wa.sendButtons(
     to,
-    `👋 Welcome to *${env.APP_NAME}*.\n\nTell us what you're looking for and we'll show you who's selling it: cars, fridges, carpenters, mechanics and more. Or sell your own things and services.\n\nBy continuing you agree that:\n• we store your name, town and posts, and only share your number with people you say yes to\n• no illegal goods or services are allowed\n• ${env.APP_NAME} only connects people. We aren't part of any deal and aren't responsible for it.`,
+    `👋 Welcome to *${env.APP_NAME}*.\n\nTell us what you're looking for and we'll show you who's selling it: cars, fridges, carpenters, mechanics and more. Or sell your own things and services.\n\nBy tapping *I agree* you agree that:\n• we store your name, town, profile and posts\n• we share your phone number with another person *only when you both agree* to swap numbers, and never before\n• no illegal goods or services are allowed\n• ${env.APP_NAME} only connects people. We aren't part of any deal and aren't responsible for it.`,
     [
       { id: "consent:yes", title: "I agree" },
       { id: "terms", title: "Read the rules" },
@@ -878,10 +878,25 @@ async function askConsent(to: string): Promise<void> {
   );
 }
 
+/** The "How it works" message: what Scoutly does, how a swap works, and exactly how credits work. */
+function HOW_IT_WORKS(): string {
+  const bundles = BUNDLES.map((b) => `${formatUsd(b.cents).replace(".00", "")} = ${b.credits} credits`).join(" · ");
+  return [
+    `*How ${env.APP_NAME} works*`,
+    `🔎 *Looking for something?* Type it in one message, e.g. _"pre-loved fridge under $100"_ or _"plumber this week"_. We show you who has it, cheapest first. For services, providers send you quotes to compare.`,
+    `🏷️ *Selling or offering a service?* List it once with photos. People looking for it are sent to you. No more posting in groups and hoping.`,
+    `🤝 *How a swap works*\n1. You tap *I'm interested* on something (or someone is interested in yours).\n2. The other person sees your name, town and what you're after. *Never your number.*\n3. Only if they say *yes* do you both get each other's number and a chat link.`,
+    `💳 *How credits work*\n• *1 credit = 1 number swap.* Both people use 1 credit each.\n• Searching, posting, listing and looking are *free*.\n• When you tap *I'm interested*, 1 credit goes *on hold*. It isn't spent yet.\n• It's only used if the swap happens. If they say no, don't reply in 48 hours, or it's already sold, *you get it back*.\n• Free credits: ${WELCOME_CREDITS} when you join, plus ${WEEKLY_FREE_CREDITS} every Monday.\n• Need more? ${bundles}, paid with EcoCash or OneMoney.\n• Type *CREDITS* to see your balance.`,
+    `🔒 *Your number:* by using ${env.APP_NAME} you agree that we share your phone number with another person *only when you both agree* to swap. Never before.`,
+    `Type MENU, TERMS or STOP (alerts off) any time.`,
+    LIABILITY,
+  ].join("\n\n");
+}
+
 async function showTerms(to: string): Promise<void> {
   await wa.sendText(
     to,
-    `*${env.APP_NAME} rules*\n\n1. ${env.APP_NAME} only connects buyers and sellers. We don't sell, deliver or guarantee anything, and we aren't responsible for any deal, payment or item.\n2. No illegal goods or services, e.g. drugs, weapons, stolen goods, fake documents, counterfeit goods or protected wildlife. Posts like these are blocked and accounts removed.\n3. Be honest about items and prices. Listings with 3 confirmed reports are paused.\n4. Your number is only shared when both sides agree to swap numbers.\n5. Credits pay for swaps and ads. Credits on hold come back if a swap doesn't happen.\n6. Stay safe: meet in public, check the item or work, and never pay a deposit before you've seen it.\n\nType MENU to continue.`,
+    `*${env.APP_NAME} rules*\n\n1. ${env.APP_NAME} only connects buyers and sellers. We don't sell, deliver or guarantee anything, and we aren't responsible for any deal, payment or item.\n2. No illegal goods or services, e.g. drugs, weapons, stolen goods, fake documents, counterfeit goods or protected wildlife. Posts like these are blocked and accounts removed.\n3. Be honest about items and prices. Listings with 3 confirmed reports are paused.\n4. By using ${env.APP_NAME} you consent to us sharing your phone number with another user *only after you both agree* to swap numbers. We never show it in listings, searches or profiles before that.\n5. A swap uses 1 credit from each side. Credits are only used when a swap actually happens; credits on hold come back if it doesn't. Searching, posting and listing are free.\n6. Stay safe: meet in public, check the item or work, and never pay a deposit before you've seen it.\n\nType MENU to continue.`,
   );
 }
 
@@ -1071,7 +1086,7 @@ async function showMenu(u: User, greeting: string): Promise<void> {
 async function showHelp(u: User): Promise<void> {
   await wa.sendText(
     u.phone,
-    `*How ${env.APP_NAME} works*\n\n🔎 *Looking for something?* Post it with your budget. Items come back as picture cards, new and pre-loved side by side. For services, providers send you quotes to compare.\n\n🏷️ *Selling?* List it once with photos. Buyers who are looking for it are sent to you. No more posting in groups and hoping.\n\n🤝 *Swapping numbers* happens only when both sides say yes. Each side uses credits (1 for most things, 3 for cars and houses).\n\n🎁 Everyone gets ${WELCOME_CREDITS} free credits. More from ${formatUsd(BUNDLES[0]?.cents ?? 200)}.\n\nType MENU, TERMS or STOP (alerts off) any time.\n\n${LIABILITY}`,
+    HOW_IT_WORKS(),
   );
 }
 
