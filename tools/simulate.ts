@@ -214,7 +214,7 @@ async function main(): Promise<void> {
     let r = await post(CUSTOMER, { text: "Looking for a car under $9,000", kind: "item", cat: "cars", budget: "$9,000", when: "week" });
     const carousel = r.find((m) => m.to === CUSTOMER && m.type === "carousel");
     check(Boolean(carousel), "results come as a swipeable carousel");
-    check(Boolean(carousel && /BMW 7 Series 745i · \$5,500 · Pre-loved · Nationwide/.test(carousel.options[0] ?? "") && /Nissan NP300 single cab · \$8,500/.test(carousel.options[1] ?? "")), "cards show photo, price and condition, cheapest first");
+    check(Boolean(carousel && /BMW 7 Series 745i · \$5,500 · Pre-loved · 📍 Bulawayo · delivers anywhere · Seller: 🥉 Bronze/.test(carousel.options[0] ?? "") && /Nissan NP300 single cab · \$8,500/.test(carousel.options[1] ?? "")), "cards show photo, price and condition, cheapest first");
     check(Boolean(carousel && /bmw745\.jpg/.test(carousel.options[0] ?? "")), "the BMW card uses its real photo");
     check(Boolean(carousel && /^adtap:AD-\d+ · Sponsored · Kudu Car Cover/.test(carousel.options.at(-1) ?? "")), "the last card is a labelled sponsored ad (complementary: insurance for cars)");
     check(has(r, CUSTOMER, /Swapping numbers uses 1 credit \(you have 3\)/) && has(r, CUSTOMER, /alert:on:N-1001/), "explains the swap cost (1 credit for everything) and offers alerts");
@@ -393,6 +393,57 @@ async function main(): Promise<void> {
     await send(CUSTOMER, { reply: "kind:item" });
     r = await send(CUSTOMER, { reply: "cat:fashion" });
     check(has(r, CUSTOMER, /Clothes & shoes · Bulawayo/) && !has(r, CUSTOMER, /What's your budget/), "after picking the category it goes straight to results");
+
+    // ---- Joshua's "fuel saver" search (22 Nov screenshots): understood straight away, no robotic echo
+    r = await send(CUSTOMER, { text: "Looking for a fuel saver budget 4000" });
+    check(!has(r, CUSTOMER, /kind:item/) && has(r, CUSTOMER, /Cars & bakkies · up to \$4,000 · Bulawayo/), "local words: 'fuel saver' goes straight to Cars with the budget");
+    check(!has(r, CUSTOMER, /Looking for "Looking for/), "no robotic repeat of the whole message");
+    r = await send(CUSTOMER, { text: "I need a gazebo for my garden party, budget $200" });
+    check(has(r, CUSTOMER, /Got it: \*a gazebo for my garden party\*\. Is that something to buy, or a service/) && has(r, CUSTOMER, /Something to buy/), "unclear search: short natural question, no budget in the echo");
+    await send(CUSTOMER, { text: "MENU" });
+
+    // ---- Selling a car: year required, mileage asked, at least 1 photo required
+    await send(PROVIDER, { text: "MENU" });
+    await send(PROVIDER, { reply: "menu:sell" });
+    await send(PROVIDER, { reply: "kind:item" });
+    r = await send(PROVIDER, { reply: "cat:cars" });
+    check(has(r, PROVIDER, /year, make and model/), "car listing asks for year, make and model");
+    r = await send(PROVIDER, { text: "Honda Fit" });
+    check(has(r, PROVIDER, /Please include the \*year\*/), "a car without a year is sent back");
+    r = await send(PROVIDER, { text: "2014 Honda Fit" });
+    check(has(r, PROVIDER, /mileage/), "asks the mileage");
+    r = await send(PROVIDER, { text: "98k" });
+    await send(PROVIDER, { reply: "desc:skip" });
+    await send(PROVIDER, { reply: "cond:good" });
+    r = await send(PROVIDER, { text: "3500" });
+    check(has(r, PROVIDER, /At least 1 photo is needed/) && !has(r, PROVIDER, /photos:skip/), "cars must have a photo (no skip button)");
+    r = await send(PROVIDER, { reply: "photos:done" });
+    check(has(r, PROVIDER, /need at least \*1 photo\*/), "Done without a photo is refused for cars");
+    await send(PROVIDER, { image: "media-7" }, 700);
+    await send(PROVIDER, { reply: "photos:done" });
+    r = await send(PROVIDER, { reply: "cover:all" });
+    check(has(r, PROVIDER, /2014 Honda Fit · 98,000 km/), "listing summary shows the mileage");
+    await send(PROVIDER, { reply: "list:post" });
+    r = await send(CUSTOMER, { text: "honda fit under $4000" });
+    check(has(r, CUSTOMER, /2014 Honda Fit · 98,000 km[\s\S]*\$3,500 · Pre-loved · 📍 Bulawayo · delivers anywhere/), "car card shows year, model, mileage and the seller's town");
+
+    // ---- An item with no photo gets a tidy category card, and badges talk about the seller
+    await send(PROVIDER, { text: "MENU" });
+    await send(PROVIDER, { reply: "menu:sell" });
+    await send(PROVIDER, { reply: "kind:item" });
+    await send(PROVIDER, { reply: "cat:furniture" });
+    await send(PROVIDER, { text: "Three seater sofa, grey" });
+    await send(PROVIDER, { reply: "desc:skip" });
+    await send(PROVIDER, { reply: "cond:used" });
+    await send(PROVIDER, { text: "120" });
+    await send(PROVIDER, { reply: "photos:skip" });
+    await send(PROVIDER, { reply: "cover:city" });
+    await send(PROVIDER, { reply: "list:post" });
+    r = await send(CUSTOMER, { text: "sofa under $150" });
+    check(has(r, CUSTOMER, /\[photo ph-furniture\.jpg\]/) && !has(r, CUSTOMER, /no-photo\.jpg/), "no photo: a Scoutly category card, not a big empty box");
+    check(has(r, CUSTOMER, /Seller: (🆕 new on Scoutly|🥉 Bronze)/) && !has(r, CUSTOMER, /🆕 New · ⭐ New/), "badges clearly describe the seller, not the item");
+    check(has(r, CUSTOMER, /1 match so far\. Tap \*🔔 Alert me\*/), "one result: honest wording that leads with Alert me");
+    await send(CUSTOMER, { text: "MENU" });
 
     // ---- How it works explains credits and number-sharing consent
     r = await send(CUSTOMER, { reply: "menu:help" });

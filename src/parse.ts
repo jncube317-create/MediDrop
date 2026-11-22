@@ -7,14 +7,14 @@ import type { WhenKey } from "./data";
 /** Words and short phrases that point to a category. Phrases count double. */
 const WORDS: Record<string, string[]> = {
   // items
-  cars: ["car", "cars", "vehicle", "vitz", "honda fit", "toyota", "nissan", "mazda", "bmw", "mercedes", "benz", "hilux", "ranger", "bakkie", "pickup", "sedan", "suv", "hatchback", "corolla", "isuzu", "kombi", "quantum", "truck", "single cab", "double cab", "np300", "navara", "prado", "rav4", "demio", "axio", "allion", "premio"],
+  cars: ["fuel saver", "fuel savers", "ex jap", "ex-jap", "toyota aqua", "toyota wish", "honda fit", "fit hybrid", "nissan note", "nissan march", "toyota ist", "sienta", "noah", "voxy", "hiace", "raum", "passo", "belta", "spacio", "auris", "harrier", "forester", "golf", "polo", "car", "cars", "vehicle", "vitz", "honda fit", "toyota", "nissan", "mazda", "bmw", "mercedes", "benz", "hilux", "ranger", "bakkie", "pickup", "sedan", "suv", "hatchback", "corolla", "isuzu", "kombi", "quantum", "truck", "single cab", "double cab", "np300", "navara", "prado", "rav4", "demio", "axio", "allion", "premio"],
   carparts: ["tyre", "tyres", "tire", "tires", "rims", "gearbox", "bumper", "headlight", "headlights", "spares", "spare parts", "car parts", "exhaust", "radiator", "shocks", "side mirror", "brake pads", "alternator", "car battery"],
   appliances: ["fridge", "fridges", "refrigerator", "freezer", "deep freezer", "stove", "microwave", "washing machine", "kettle", "tv", "television", "aircon", "air conditioner", "heater", "geyser", "iron", "blender", "toaster", "dishwasher", "gas stove", "hot plate"],
   furniture: ["sofa", "couch", "lounge suite", "bed", "mattress", "table", "chair", "chairs", "wardrobe", "desk", "cabinet", "dining", "dining set", "bunk bed", "headboard", "dressing table", "bookshelf", "curtains", "carpet"],
-  building: ["door", "doors", "window", "windows", "cement", "bricks", "roofing", "roofing sheets", "tiles", "timber", "gate", "steel door", "sand", "river sand", "pit sand", "quarry", "ibr", "zinc", "paint tin", "wall tiles"],
+  building: ["jojo", "jojo tank", "water tank", "door", "doors", "window", "windows", "cement", "bricks", "roofing", "roofing sheets", "tiles", "timber", "gate", "steel door", "sand", "river sand", "pit sand", "quarry", "ibr", "zinc", "paint tin", "wall tiles"],
   phones: ["phone", "phones", "iphone", "samsung", "laptop", "laptops", "tablet", "ipad", "smartphone", "charger", "airpods", "computer", "ps5", "ps4", "playstation", "xbox", "earphones", "speaker", "router", "camera", "smartwatch"],
   fashion: ["shoes", "sneakers", "dress", "dresses", "clothes", "jacket", "sandals", "handbag", "jeans", "shirt", "suit", "uniform", "uniforms", "heels", "boots", "skirt", "trousers", "hoodie", "tracksuit"],
-  property: ["house", "room", "rooms", "flat", "apartment", "cottage", "stand", "land", "plot", "rent", "rental", "to rent", "lodge", "bedroom", "bedroomed", "office space", "shop space", "boarding", "accommodation", "garden flat", "townhouse"],
+  property: ["boarding house", "room to rent", "rooms to rent", "house", "room", "rooms", "flat", "apartment", "cottage", "stand", "land", "plot", "rent", "rental", "to rent", "lodge", "bedroom", "bedroomed", "office space", "shop space", "boarding", "accommodation", "garden flat", "townhouse"],
   // services
   carpentry: ["carpenter", "carpentry", "cupboards", "kitchen units", "built in", "built-in", "fitted wardrobe"],
   mechanic: ["mechanic", "car service", "service my car", "car repair", "panel beater", "panel beating", "auto electrician", "car won't start", "brakes", "wheel alignment"],
@@ -91,6 +91,23 @@ export function findWhen(text: string): { when: WhenKey; text?: string } | undef
   const date = t.match(/\b(?:on\s+)?((?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\s+)?(\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*)\b/);
   if (date) return { when: "date", text: date[0].replace(/^on\s+/, "") };
   return undefined;
+}
+
+/**
+ * The thing itself, for repeating back: "Looking for a fuel saver budget 4000" → "a fuel saver".
+ * Drops "I'm looking for", "I need", budget and timing words.
+ */
+export function subjectOf(text: string): string {
+  let t = ` ${text.trim()} `;
+  t = t.replace(/^\s*(hi|hello|hey|please|pls)\b[,!. ]*/i, " ");
+  t = t.replace(/^\s*(i\s*'?\s*a?m\s+|i\s+am\s+)?(looking|searching|hunting)\s+for\s+/i, " ");
+  t = t.replace(/^\s*(i\s+)?(need|want|would like|am after|'m after)\s+(to\s+(buy|find|get)\s+)?/i, " ");
+  t = t.replace(/^\s*(where can i (get|buy|find)|anyone (selling|with|who has))\s+/i, " ");
+  t = t.replace(/[,;]?\s*\b(with\s+)?(a\s+)?(budget|under|below|max|maximum|up to|upto|less than|around|not more than)\b.*$/i, " ");
+  t = t.replace(/[,;]?\s*(us)?\$\s*\d[\d,.]*\s*k?\b.*$/i, " ");
+  t = t.replace(/[,;]?\s*\b(today|tonight|urgently|urgent|asap|this week|tomorrow|anywhere in zim\w*)\b.*$/i, " ");
+  t = t.replace(/\s+/g, " ").replace(/[\s,.;:!?-]+$/g, "").trim();
+  return t || text.trim();
 }
 
 /** Reads one typed search. `cities` lets it spot "in Harare" or "anywhere". */

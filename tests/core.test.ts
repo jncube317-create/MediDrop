@@ -1,5 +1,5 @@
 import { test } from "node:test";
-import { understand, guessCategory, findBudget } from "../src/parse";
+import { understand, guessCategory, findBudget, subjectOf } from "../src/parse";
 import assert from "node:assert/strict";
 import { eligible, keywords, level, profileScore, quoteCents, rankItems, rankProviders, type ListingLike, type NeedLike } from "../src/match";
 import { Ledger } from "../src/credits";
@@ -313,4 +313,14 @@ test("posts for 'today' close at midnight Harare time, 'this week' at the end of
   const mon = Date.parse("2026-11-23T06:00:00Z");
   assert.equal(new Date(wantedBy("week", mon)!).toISOString(), "2026-11-29T22:00:00.000Z");
   assert.equal(wantedBy("flexible", sat10am), null);
+});
+
+test("local words and a short, natural echo (22 Nov feedback)", () => {
+  assert.equal(guessCategory("Looking for a fuel saver budget 4000"), "cars");
+  assert.equal(guessCategory("toyota aqua or honda fit"), "cars");
+  assert.equal(guessCategory("jojo tank 5000 litres"), "building");
+  assert.equal(subjectOf("Looking for a fuel saver budget 4000"), "a fuel saver");
+  assert.equal(subjectOf("I'm looking for a pre-loved fridge with a budget of $100"), "a pre-loved fridge");
+  assert.equal(subjectOf("I need a plumber today"), "a plumber");
+  assert.equal(subjectOf("gazebo, under $200"), "gazebo");
 });

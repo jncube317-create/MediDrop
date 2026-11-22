@@ -52,7 +52,7 @@ import { formatLocalNumber, networkMatches, normalizeZwMobile, toLocalNumber } f
 import { track } from "./analytics";
 import { demoPhoto, savePhoto } from "./media";
 import { dbEnabled, loadTable, upsert, type CreditRow, type Row } from "./store";
-import { understand } from "./parse";
+import { understand, subjectOf } from "./parse";
 import type { CarouselCard } from "./limits";
 
 export type Incoming =
@@ -69,7 +69,7 @@ type Step =
   | "MENU"
   | "CAT_KIND" | "CAT_PICK"
   | "FIND_TEXT" | "FIND_BUDGET" | "FIND_WHEN" | "FIND_DATE" | "FIND_WHERE" | "FIND_CONFIRM"
-  | "SELL_TITLE" | "SELL_DESC" | "SELL_COND" | "SELL_PRICE" | "SELL_PHOTOS" | "SELL_COVER" | "SELL_CONFIRM"
+  | "SELL_TITLE" | "SELL_MILEAGE" | "SELL_DESC" | "SELL_COND" | "SELL_PRICE" | "SELL_PHOTOS" | "SELL_COVER" | "SELL_CONFIRM"
   | "QUOTE_TEXT" | "PHARM_DETAILS"
   | "AD_TEXT" | "AD_PHOTO" | "AD_WHERE" | "AD_CONFIRM"
   | "BUY_PAYER" | "BUY_OTHER_NUMBER" | "BUY_WAIT";
@@ -89,12 +89,14 @@ interface Draft {
   condition?: Condition | null;
   priceCents?: number | null;
   priceText?: string | null;
+  mileageKm?: number | null;
   photos?: string[];
   nationwide?: boolean;
   bundle?: string;
   profile?: Partial<Profile>;
   next?: "find" | "sell" | "menu"; // where to go after the profile is saved
   editing?: string; // need being changed from the results (closed and re-run)
+  understood?: boolean;
 }
 
 /** What buyers see about a seller or service provider. */
@@ -141,6 +143,7 @@ interface Need {
   createdAt: number;
   status: "OPEN" | "CLOSED" | "EXPIRED";
   connections: number;
+  understood?: boolean; // false = the bot had to ask for the category (words to add to the list)
 }
 
 interface Listing {
@@ -155,6 +158,7 @@ interface Listing {
   priceCents: number | null;
   priceText: string | null;
   condition: Condition | null;
+  mileageKm?: number | null; // cars only
   photos: string[];
   active: boolean;
   sold: boolean;
@@ -381,25 +385,46 @@ function priceLabel(l: Listing): string {
   return l.priceText ?? "Ask for price";
 }
 
+/** About the SELLER, never the item, so "new" can't be mistaken for the item's condition. */
 function badges(l: Listing): string {
   const avg = averageRating(l);
   const lv = level(l.jobs, avg);
-  const stars = l.ratingCount ? `⭐ ${avg.toFixed(1)} (${l.ratingCount})` : "⭐ New";
   const owner = users.get(l.owner);
-  return `${LEVEL_ICON[lv]} ${lv} · ${stars}${owner?.pharmacy ? " · 💊 Licensed pharmacy" : owner?.verified ? " · ✅ Verified" : ""}`;
+  const who = lv === "New" ? "Seller: 🆕 new on Scoutly" : `Seller: ${LEVEL_ICON[lv]} ${lv}`;
+  const stars = l.ratingCount ? `⭐ ${avg.toFixed(1)} (${l.ratingCount})` : "no ratings yet";
+  const tick = owner?.pharmacy ? " · 💊 Licensed" : owner?.verified ? " · ✅ Verified" : "";
+  return `${who} · ${stars}${tick}`;
+}
+
+/** Shortens at a word boundary: "Fuel saver available for…" not "…immediate purc…". */
+function fitWords(t: string, max: number): string {
+  const s = t.replace(/\s+/g, " ").trim();
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max - 1);
+  const at = cut.lastIndexOf(" ");
+  return `${(at > max * 0.5 ? cut.slice(0, at) : cut).replace(/[\s,.;:-]+$/, "")}…`;
+}
+
+function kmLabel(km: number): string {
+  return `${km.toLocaleString("en-US")} km`;
 }
 
 /** Fits a carousel card: max 160 characters and 2 line breaks. */
 function cardText(l: Listing): string {
   const cond = l.condition ? (l.condition === "new" ? "New" : "Pre-loved") : catName(l.category);
-  const where = l.nationwide ? "Nationwide" : cityName(l.city);
+  const where = `📍 ${cityName(l.city)}${l.nationwide ? " · delivers anywhere" : ""}`;
+  const head = l.mileageKm ? `${fitWords(l.title, 30)} · ${kmLabel(l.mileageKm)}` : fitWords(l.title, 44);
   // fit() would squash the line breaks, so each line is shortened on its own.
-  return `${fit(l.title, 40)}\n${fit(`${priceLabel(l)} · ${cond} · ${where}`, 50)}\n${fit(badges(l), 60)}`;
+  return `${head}\n${fit(`${priceLabel(l)} · ${cond} · ${where}`, 56)}\n${fit(badges(l), 58)}`;
 }
 
+/** The listing's own photo, or a tidy Scoutly card for its category (never a big empty box). */
 function cardImage(l: Listing): string {
-  return l.photos[0] ?? demoPhoto("no-photo.jpg");
+  return l.photos[0] ?? demoPhoto(`ph-${getCategory(l.category) ? l.category : "other"}.jpg`);
 }
+
+/** Cars, houses and land must have at least one photo: buyers won't trust them without one. */
+const PHOTO_REQUIRED = new Set(["cars", "property"]);
 
 async function anythingElse(to: string, body = "Anything else we can help you with?"): Promise<void> {
   await wa.sendButtons(to, body, [
@@ -774,7 +799,21 @@ async function conversation(m: Incoming): Promise<void> {
     case "SELL_TITLE": {
       if (text.length < 3) return void (await wa.sendText(to, "Please name it in a few words."));
       if (await refusedAsBanned(u, text)) return;
+      if (u.draft.category === "cars" && !/\b(19[5-9]\d|20[0-4]\d)\b/.test(text))
+        return void (await wa.sendText(to, "Please include the *year*, e.g. _2014 Honda Fit_ or _Toyota Vitz 2010_. Car buyers compare by year first."));
       u.draft.title = clean(text, 60);
+      if (u.draft.category === "cars") return askMileage(u);
+      return askSellDesc(u);
+    }
+    case "SELL_MILEAGE": {
+      if (id === "km:skip") u.draft.mileageKm = null;
+      else {
+        const m = text.toLowerCase().replace(/[, ]/g, "").match(/^(\d+(?:\.\d+)?)(k)?(km|kms)?$/);
+        if (!m) return void (await wa.sendText(to, "Type the mileage as a number, e.g. *98000* or *98k*."));
+        const km = Math.round(Number(m[1]) * (m[2] ? 1000 : 1));
+        if (!Number.isFinite(km) || km < 0 || km > 2_000_000) return void (await wa.sendText(to, "That mileage doesn't look right. Type it like *98000*."));
+        u.draft.mileageKm = km;
+      }
       return askSellDesc(u);
     }
     case "SELL_DESC": {
@@ -805,7 +844,11 @@ async function conversation(m: Incoming): Promise<void> {
       return askPhotos(u);
     }
     case "SELL_PHOTOS": {
-      if (id === "photos:done" || id === "photos:skip") return askCover(u);
+      if (id === "photos:done" || id === "photos:skip") {
+        if (PHOTO_REQUIRED.has(u.draft.category ?? "") && !(u.draft.photos?.length ?? 0))
+          return void (await wa.sendText(to, `📸 ${catName(u.draft.category ?? "")} need at least *1 photo*. Buyers don't trust these listings without one. Send a photo now (tap 📎 or 📷).`));
+        return askCover(u);
+      }
       return didntGetThat(u);
     }
     case "SELL_COVER": {
@@ -1077,7 +1120,7 @@ async function showMenu(u: User, greeting: string): Promise<void> {
       `${greeting}\n\nWhat would you like to do? You can also just type what you're looking for.`,
       "Choose",
       [
-        { id: "menu:find", title: "🔎 Find something", description: "Items or services. See prices side by side." },
+        { id: "menu:find", title: "🔎 Find something", description: "Tell us what you need. We'll show you who has it." },
         { id: "menu:sell", title: "🏷️ Sell or offer", description: "List an item or service once. Buyers come to you." },
         { id: "menu:posts", title: "My posts", description: "See, close or mark as sold. Rate people." },
         { id: "menu:profile", title: "🪪 My profile", description: u.profile ? `${fit(u.profile.name, 40)} · tap to view or edit` : "Set it up: name, photo, about you." },
@@ -1106,15 +1149,15 @@ async function askKind(u: User, mode: Mode): Promise<void> {
   const body =
     mode === "find"
       ? u.draft.text
-        ? `Looking for "${fit(u.draft.text, 80)}"? Is it an item or a service?`
-        : "What are you looking for: an item or a service?"
+        ? `Got it: *${fit(subjectOf(u.draft.text), 60)}*. Is that something to buy, or a service (someone to do a job)?`
+        : "What are you looking for: something to buy, or a service?"
       : mode === "sell"
         ? "What would you like to list?"
         : "What do your customers search for: items or services?";
   await prompt(u, () =>
     wa.sendButtons(u.phone, body, [
-      { id: "kind:item", title: mode === "sell" ? "Sell an item" : "An item" },
-      { id: "kind:service", title: mode === "sell" ? "Offer a service" : "A service" },
+      { id: "kind:item", title: mode === "sell" ? "Sell an item" : mode === "find" ? "🛒 Something to buy" : "An item" },
+      { id: "kind:service", title: mode === "sell" ? "Offer a service" : mode === "find" ? "🛠️ A service" : "A service" },
     ]),
   );
 }
@@ -1167,6 +1210,7 @@ async function quickFind(u: User, raw: string): Promise<void> {
     ...(got.city && got.city !== u.city ? { city: got.city } : {}),
   };
   track("search_understood", u.phone, { category: got.category ?? keepCategory ?? "unknown", budget: got.budgetCents !== undefined, when: got.when ?? "none" });
+  u.draft.understood = Boolean(got.category);
   if (medicineWord(text)) return findMedicine(u);
   const cat = getCategory(keepCategory ?? got.category ?? "");
   if (!cat) return askKind(u, "find");
@@ -1178,11 +1222,31 @@ async function quickFind(u: User, raw: string): Promise<void> {
 // ---------------------------------------------------------------- editing a search after the results
 
 async function searchOptions(u: User, need: Need, intro: string): Promise<void> {
-  await wa.sendButtons(u.phone, intro, [
-    { id: `alert:on:${need.id}`, title: "🔔 Alert me" },
-    { id: `edit:menu:${need.id}`, title: "✏️ Edit search" },
-    { id: "menu:credits", title: "💳 My credits" },
-  ]);
+  const broke = ledger.balance(u.phone) < costOf(need.category);
+  await wa.sendButtons(
+    u.phone,
+    intro,
+    broke
+      ? [
+          { id: "menu:credits", title: "💳 Get credits" },
+          { id: `alert:on:${need.id}`, title: "🔔 Alert me" },
+          { id: `edit:menu:${need.id}`, title: "✏️ Edit search" },
+        ]
+      : [
+          { id: `alert:on:${need.id}`, title: "🔔 Alert me" },
+          { id: `edit:menu:${need.id}`, title: "✏️ Edit search" },
+          { id: "menu:credits", title: "💳 My credits" },
+        ],
+  );
+}
+
+/** What to say under the results: how many, and (up front) if they can't swap yet. */
+function resultsNote(u: User, count: number, cost: number): string {
+  const have = ledger.balance(u.phone);
+  const many = count === 1 ? "1 match so far. Tap *🔔 Alert me* and we'll send you new ones as they're listed." : `${count} matches, best first.`;
+  if (have < cost)
+    return `${many}\n\n⚠️ *You have ${credits(have)}*, so you can't swap numbers yet. 🎁 ${WEEKLY_FREE_CREDITS} free credits arrive on Monday, or get ${credits(BUNDLES[0]?.credits ?? 2)} now for ${formatUsd(BUNDLES[0]?.cents ?? 100).replace(".00", "")}.`;
+  return `${many} Tap *I'm interested* on a card and we'll ask the seller. Swapping numbers uses ${credits(cost)} (you have ${have}).`;
 }
 
 async function editMenu(u: User, needId: string): Promise<void> {
@@ -1307,6 +1371,7 @@ async function createNeed(u: User): Promise<void> {
     budgetCents: d.budgetCents ?? null,
     when: d.when ?? "flexible",
     whenText: d.whenText ?? null,
+    understood: d.understood ?? true,
     alert: false,
     createdAt: Date.now(),
     status: "OPEN",
@@ -1353,7 +1418,7 @@ async function showItemCards(u: User, need: Need): Promise<void> {
   }));
   if (ad) cards.push({ imageUrl: ad.photo ?? demoPhoto("no-photo.jpg"), text: `Sponsored\n${fit(ad.text, 140)}`, buttons: [{ id: `adtap:${ad.id}`, title: "Contact them" }] });
 
-  const intro = `${found.length} ${found.length === 1 ? "match" : "matches"} for "${fit(need.text, 50)}", best matches first. Swipe to compare 👉`;
+  const intro = `${found.length === 1 ? "1 match" : `${found.length} matches`} for *${fit(subjectOf(need.text), 50)}*${found.length > 1 ? ", best first. Swipe to compare 👉" : "."}`;
   let sent = false;
   if (cards.length >= 2) sent = await wa.sendCarousel(u.phone, intro, cards);
   if (!sent) {
@@ -1382,7 +1447,7 @@ async function showItemCards(u: User, need: Need): Promise<void> {
   await searchOptions(
     u,
     need,
-    `🔎 ${searchLine(need)}\n\nTap *I'm interested* on a card and we'll ask the seller. Swapping numbers uses ${credits(cost)} (you have ${ledger.balance(u.phone)}).`,
+    `🔎 ${searchLine(need)}\n\n${resultsNote(u, found.length, cost)}`,
   );
 }
 
@@ -1428,7 +1493,19 @@ async function startSell(u: User): Promise<void> {
 
 async function askSellTitle(u: User): Promise<void> {
   u.step = "SELL_TITLE";
-  await prompt(u, () => wa.sendText(u.phone, "What are you selling? Name it in a few words.\n\nFor example: _Defy combi fridge 250L_ or _Toyota Vitz 2010_"));
+  await prompt(u, () =>
+    wa.sendText(
+      u.phone,
+      u.draft.category === "cars"
+        ? "Which car is it? Type the *year, make and model*.\n\nFor example: _2014 Honda Fit_ or _Toyota Vitz 2010_"
+        : "What are you selling? Name it in a few words.\n\nFor example: _Defy combi fridge 250L_ or _Steel door, charcoal_",
+    ),
+  );
+}
+
+async function askMileage(u: User): Promise<void> {
+  u.step = "SELL_MILEAGE";
+  await prompt(u, () => wa.sendButtons(u.phone, "What's the *mileage*? e.g. _98000_ or _98k_", [{ id: "km:skip", title: "Not sure" }]));
 }
 
 async function askSellDesc(u: User): Promise<void> {
@@ -1468,11 +1545,14 @@ async function askPhotos(u: User): Promise<void> {
   u.step = "SELL_PHOTOS";
   u.draft.photos = u.draft.photos ?? [];
   const what = u.draft.kind === "item" ? "it" : "your past work";
+  const required = PHOTO_REQUIRED.has(u.draft.category ?? "");
   await prompt(u, () =>
-    wa.sendButtons(u.phone, `📸 Send up to 3 photos of ${what} now. Listings with photos get far more interest.\n\nTap *Done* when you've sent them.`, [
-      { id: "photos:done", title: "Done" },
-      { id: "photos:skip", title: "No photos" },
-    ]),
+    required
+      ? wa.sendText(u.phone, `📸 Send 1 to 3 photos of ${what} now. *At least 1 photo is needed* for ${catName(u.draft.category ?? "").toLowerCase()}.`)
+      : wa.sendButtons(u.phone, `📸 Send up to 3 photos of ${what} now. Listings with photos get far more interest.\n\nTap *Done* when you've sent them.`, [
+          { id: "photos:done", title: "Done" },
+          { id: "photos:skip", title: "No photos" },
+        ]),
   );
 }
 
@@ -1508,7 +1588,7 @@ async function sellSummary(u: User): Promise<void> {
   await prompt(u, () =>
     wa.sendButtons(
       u.phone,
-      `*Check your listing*\n\n${isItem ? `🏷️ ${d.title}` : `👤 ${u.name}`}\n${catName(d.category ?? "")}${d.condition ? ` · ${CONDITION_LABEL[d.condition]}` : ""}\n💵 ${price}\n📸 ${plural(d.photos?.length ?? 0, "photo")}\n📍 ${d.nationwide ? "All of Zimbabwe" : cityName(u.city)}${d.text ? `\n"${fit(d.text, 200)}"` : ""}\n\n📈 Listing score: ${score.score}%${score.tip ? `. ${score.tip}` : ""}`,
+      `*Check your listing*\n\n${isItem ? `🏷️ ${d.title}${d.mileageKm ? ` · ${kmLabel(d.mileageKm)}` : ""}` : `👤 ${u.name}`}\n${catName(d.category ?? "")}${d.condition ? ` · ${CONDITION_LABEL[d.condition]}` : ""}\n💵 ${price}\n📸 ${plural(d.photos?.length ?? 0, "photo")}\n📍 ${d.nationwide ? "All of Zimbabwe" : cityName(u.city)}${d.text ? `\n"${fit(d.text, 200)}"` : ""}\n\n📈 Listing score: ${score.score}%${score.tip ? `. ${score.tip}` : ""}`,
       [
         { id: "list:post", title: "List it" },
         { id: "list:cancel", title: "Cancel" },
@@ -1536,6 +1616,7 @@ async function createListing(u: User): Promise<void> {
     priceCents: cat.kind === "item" ? d.priceCents ?? null : null,
     priceText: cat.kind === "service" ? d.priceText ?? null : null,
     condition: d.condition ?? null,
+    mileageKm: d.mileageKm ?? null,
     photos: d.photos ?? [],
     active: true,
     sold: false,
@@ -1600,10 +1681,10 @@ async function buyerInterested(u: User, listingId: string, needId: string | null
     track("out_of_credits", u.phone, { role: "buyer", category: l.category });
     await wa.sendButtons(
       u.phone,
-      `Swapping numbers for this uses ${credits(cost)}. You have ${credits(ledger.balance(u.phone))}.\n\nBuy credits and we'll ask the seller straight after payment.`,
+      `Swapping numbers for this uses ${credits(cost)}. You have ${credits(ledger.balance(u.phone))}.\n\n🎁 ${WEEKLY_FREE_CREDITS} free credits arrive on Monday, or buy now from ${formatUsd(BUNDLES[0]?.cents ?? 100).replace(".00", "")} and *we'll ask the seller straight after you pay*.`,
       [
-        { id: "menu:credits", title: "Buy credits" },
-        { id: "menu:main", title: "Main menu" },
+        { id: "menu:credits", title: "💳 Buy credits" },
+        { id: "menu:main", title: "Wait for Monday" },
       ],
     );
     return;
@@ -1885,7 +1966,7 @@ async function setAlert(u: User, needId: string, on: boolean): Promise<void> {
   if (!need || need.owner !== u.phone) return didntGetThat(u);
   need.alert = on && need.status === "OPEN";
   track(on ? "alert_opt_in" : "alert_opt_out", u.phone, { category: need.category });
-  if (on) return anythingElse(u.phone, `🔔 Done. We'll message you when a new match for "${fit(need.text, 40)}" is listed. Type STOP any time to turn alerts off.\n\nAnything else?`);
+  if (on) return anythingElse(u.phone, `🔔 Done. We'll message you when a new match for *${fit(subjectOf(need.text), 40)}* is listed. Type STOP any time to turn alerts off.\n\nAnything else?`);
   return anythingElse(u.phone, "Okay, no alerts for that post. Anything else?");
 }
 
@@ -2406,7 +2487,7 @@ async function sendStats(to: string): Promise<void> {
   const topText = [...top.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${catName(k)} (${v})`).join(", ");
   await wa.sendText(
     to,
-    `📊 *${env.APP_NAME} today*\n👥 People: ${[...users.keys()].filter((p) => !isSample(p)).length}\n🔎 Posts: ${needs.size} (${[...needs.values()].filter((n) => n.status === "OPEN").length} open)\n🔥 Top searches: ${topText || "none yet"}\n🏷️ Real listings: ${real.filter((l) => l.active && !l.sold).length} live, ${real.filter((l) => l.sold).length} sold\n📬 Leads: ${all.length} · 🙋 Waiting: ${count("OFFERED") + count("INTERESTED")} · 🤝 Swapped: ${count("CONNECTED")}\n📣 Ads: ${[...ads.values()].filter((a) => a.status === "LIVE").length} live, ${[...ads.values()].filter((a) => a.status === "PENDING").length} waiting, ${[...ads.values()].reduce((s, a) => s + a.taps, 0)} taps\n💳 Credits sold: ${paid.reduce((s, p) => s + p.credits, 0)} (${formatUsd(paid.reduce((s, p) => s + p.cents, 0))})\n\nAdmin commands: STATS · LOOKUP N-1001 · GRANT 0771234567 5 · VERIFY 0771234567 · ADS`,
+    `📊 *${env.APP_NAME} today*\n👥 People: ${[...users.keys()].filter((p) => !isSample(p)).length}\n🔎 Posts: ${needs.size} (${[...needs.values()].filter((n) => n.status === "OPEN").length} open)\n🔥 Top searches: ${topText || "none yet"}\n❓ Didn't understand: ${[...needs.values()].filter((n) => n.understood === false).slice(-6).map((n) => `"${fit(n.text, 30)}" → ${catName(n.category)}`).join(", ") || "none"}\n🏷️ Real listings: ${real.filter((l) => l.active && !l.sold).length} live, ${real.filter((l) => l.sold).length} sold\n📬 Leads: ${all.length} · 🙋 Waiting: ${count("OFFERED") + count("INTERESTED")} · 🤝 Swapped: ${count("CONNECTED")}\n📣 Ads: ${[...ads.values()].filter((a) => a.status === "LIVE").length} live, ${[...ads.values()].filter((a) => a.status === "PENDING").length} waiting, ${[...ads.values()].reduce((s, a) => s + a.taps, 0)} taps\n💳 Credits sold: ${paid.reduce((s, p) => s + p.credits, 0)} (${formatUsd(paid.reduce((s, p) => s + p.cents, 0))})\n\nAdmin commands: STATS · LOOKUP N-1001 · GRANT 0771234567 5 · VERIFY 0771234567 · ADS · PHARMACY 0771234567\n(\"Didn't understand\" shows words to add to the search list.)`,
   );
 }
 
