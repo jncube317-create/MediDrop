@@ -361,6 +361,11 @@ async function main(): Promise<void> {
     check(has(r, ADMIN, /Gave 5 credits to Sizwe/) && has(r, CUSTOMER, /received 5 credits/), "GRANT tops up credits");
     r = await send(ADMIN, { text: "verify 0782222222" });
     check(has(r, PROVIDER, /verified seller/), "VERIFY gives the ✅ badge");
+    r = await send(ADMIN, { reply: "menu:credits" });
+    check(has(r, ADMIN, /buy:test1 "🧪 1 credit · \$0\.50"/), "admin sees the 50c test bundle");
+    r = await send(ADMIN, { reply: "buy:test1" });
+    check(has(r, ADMIN, /Pay \*\$0\.50\* for 1 credit/), "admin can start a 50c test payment");
+    await send(ADMIN, { text: "MENU" });
     r = await send(ADMIN, { text: "STATS" });
     check(has(r, ADMIN, /Swapped: 3[\s\S]*Ads: 3 live/), "STATS adds up");
 
@@ -443,6 +448,13 @@ async function main(): Promise<void> {
     check(has(r, CUSTOMER, /\[photo ph-furniture\.jpg\]/) && !has(r, CUSTOMER, /no-photo\.jpg/), "no photo: a Scoutly category card, not a big empty box");
     check(has(r, CUSTOMER, /Seller: (🆕 new on Scoutly|🥉 Bronze)/) && !has(r, CUSTOMER, /🆕 New · ⭐ New/), "badges clearly describe the seller, not the item");
     check(has(r, CUSTOMER, /1 match so far\. Tap \*🔔 Alert me\*/), "one result: honest wording that leads with Alert me");
+    await send(CUSTOMER, { text: "MENU" });
+
+    // ---- 50c test bundle: admin only
+    r = await send(CUSTOMER, { reply: "menu:credits" });
+    check(!has(r, CUSTOMER, /buy:test1/), "normal users don't see the 50c test bundle");
+    r = await send(CUSTOMER, { reply: "buy:test1" });
+    check(!has(r, CUSTOMER, /Pay \*\$0\.50\*/), "normal users can't buy the test bundle even by its ID");
     await send(CUSTOMER, { text: "MENU" });
 
     // ---- How it works explains credits and number-sharing consent

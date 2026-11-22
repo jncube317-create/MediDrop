@@ -168,6 +168,9 @@ export function categoriesOf(kind: Kind): Category[] {
 export function getCity(key: string): City | undefined {
   return CITIES.find((c) => c.key === key);
 }
+/** Admin-only test purchase: 1 credit for 50c, to check real EcoCash payments cheaply. Never shown to users. */
+export const ADMIN_TEST_BUNDLE: Bundle = { key: "test1", credits: 1, cents: 50 };
+
 export function getBundle(key: string): Bundle | undefined {
   return BUNDLES.find((b) => b.key === key);
 }

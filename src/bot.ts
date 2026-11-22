@@ -16,6 +16,7 @@ import * as wa from "./wa";
 import {
   AD_TAP_COST,
   BUNDLES,
+  ADMIN_TEST_BUNDLE,
   CARDS_PER_RESULT,
   CITIES,
   CONDITION_LABEL,
@@ -2278,14 +2279,23 @@ async function showCredits(u: User): Promise<void> {
       u.phone,
       `💳 You have *${credits(ledger.balance(u.phone))}*${ledger.boughtLeft(u.phone) > 0 ? ` (${ledger.freeLeft(u.phone)} free this week + ${ledger.boughtLeft(u.phone)} bought)` : ""}.\n\nA number swap uses 1 credit from each side. Held credits come back if a swap doesn't happen. Ads use ${credits(AD_TAP_COST)} per tap.\n\n🎁 Free: ${WEEKLY_FREE_CREDITS} credits every week (Monday). Unused free credits don't carry over; we use them before the ones you buy. Bought credits never expire.\n\nNeed more? Buy a bundle:`,
       "Buy credits",
-      BUNDLES.map((b) => ({ id: `buy:${b.key}`, title: `${credits(b.credits)} · ${formatUsd(b.cents)}`, description: `${formatUsd(Math.round(b.cents / b.credits))} per credit` })),
+      [
+        ...BUNDLES.map((b) => ({ id: `buy:${b.key}`, title: `${credits(b.credits)} · ${formatUsd(b.cents)}`, description: `${formatUsd(Math.round(b.cents / b.credits))} per credit` })),
+        ...(isAdmin(u.phone) ? [{ id: `buy:${ADMIN_TEST_BUNDLE.key}`, title: `🧪 1 credit · ${formatUsd(ADMIN_TEST_BUNDLE.cents)}`, description: "Admin only: test a real EcoCash payment" }] : []),
+      ],
       "Bundles",
     ),
   );
 }
 
+/** Normal bundles for everyone; the 50c test bundle only for the admin phone. */
+function bundleFor(u: User, key: string) {
+  if (key === ADMIN_TEST_BUNDLE.key) return isAdmin(u.phone) ? ADMIN_TEST_BUNDLE : undefined;
+  return getBundle(key);
+}
+
 async function startBuy(u: User, bundleKey: string): Promise<void> {
-  const bundle = getBundle(bundleKey);
+  const bundle = bundleFor(u, bundleKey);
   if (!bundle) return didntGetThat(u);
   u.draft = { bundle: bundle.key };
   u.step = "BUY_PAYER";
@@ -2306,7 +2316,7 @@ async function askOtherNumber(u: User, note = ""): Promise<void> {
 }
 
 async function beginPurchase(u: User, payer: string): Promise<void> {
-  const bundle = getBundle(u.draft.bundle ?? "");
+  const bundle = bundleFor(u, u.draft.bundle ?? "");
   if (!bundle) return showMenu(u, "Something went missing. Let's start again.");
   const purchase: Purchase = {
     id: `P-${++purchaseSeq}`, phone: u.phone, credits: bundle.credits, cents: bundle.cents, status: "PENDING", pollUrl: null, simulated: false, startedAt: Date.now(),
