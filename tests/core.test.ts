@@ -232,13 +232,44 @@ test("input guard: links, contact details, code, illegal goods and medicines are
   for (const t of ["Toyota Vitz under $4,500", "Plumber in Bulawayo this week", "Fuel injection pump for Hilux", "2015 Honda Fit 1.3", "Fridge 350L $520", "Samsung tablet 10 inch", "Budget 5 500 USD", "MENU"]) assert.equal(kind(t), null, t);
 });
 
-test("weekly free credits: +3 for everyone once a week, never twice in the same week", () => {
+test("free credits never carry over; bought credits stay; free ones are used first", () => {
+  const p = "263770000009";
   const l = new Ledger();
-  l.welcome("263770000009", 3);
-  assert.equal(l.weekly("263770000009", 3, "2026-11-23"), 3);
-  assert.equal(l.weekly("263770000009", 3, "2026-11-23"), 0, "only once per week");
-  assert.equal(l.weekly("263770000009", 3, "2026-11-30"), 3, "again next week");
-  assert.equal(l.balance("263770000009"), 9);
+  l.welcome(p, 3); // sign-up week
+  assert.equal(l.freeLeft(p), 3);
+  // Next week: unused free credits are replaced, not added to
+  assert.equal(l.weeklyReset(p, 3, "2026-11-23"), 3);
+  assert.equal(l.balance(p), 3, "3 unused free credits don't stack into 6");
+  assert.equal(l.weeklyReset(p, 3, "2026-11-23"), 0, "only once per week");
+  // Buy 2, spend 1: the free one is used first
+  l.purchase(p, 2, "pay-1");
+  l.hold(p, "L1", 1);
+  l.capture("L1");
+  assert.deepEqual([l.balance(p), l.freeLeft(p), l.boughtLeft(p)], [4, 2, 2]);
+  // Following week: the 2 unused free credits go, the 2 bought stay, 3 new free arrive
+  l.weeklyReset(p, 3, "2026-11-30");
+  assert.deepEqual([l.balance(p), l.freeLeft(p), l.boughtLeft(p)], [5, 3, 2]);
+  // Spend more than the free ones: bought credits are used after free ones run out
+  for (const k of ["L2", "L3", "L4", "L5"]) { l.hold(p, k, 1); l.capture(k); }
+  assert.deepEqual([l.balance(p), l.freeLeft(p), l.boughtLeft(p)], [1, 0, 1]);
+  l.weeklyReset(p, 3, "2026-12-07");
+  assert.deepEqual([l.balance(p), l.freeLeft(p), l.boughtLeft(p)], [4, 3, 1], "a bought credit is never taken away");
+});
+
+test("anyone who got two lots of free credits in one week is capped back to 3", () => {
+  const p = "263770000010";
+  const l = new Ledger();
+  l.welcome(p, 3);
+  l.weekly(p, 3, "2026-11-16"); // the old stacking behaviour
+  assert.equal(l.balance(p), 6);
+  assert.equal(l.capFree(p, 3, "2026-11-16"), 3);
+  assert.equal(l.balance(p), 3);
+  l.grant(p, 5, "admin-1"); // admin GRANT counts as bought and is never capped
+  assert.equal(l.capFree(p, 3, "2026-11-16"), 0);
+  assert.equal(l.balance(p), 8);
+});
+
+test("weekKey: Harare weeks start on Monday", () => {
   assert.equal(weekKey(Date.parse("2026-11-20T10:00:00Z")), "2026-11-16", "Friday belongs to Monday's week");
   assert.equal(weekKey(Date.parse("2026-11-22T22:30:00Z")), "2026-11-23", "Sunday 22:30 UTC is already Monday in Harare");
 });

@@ -4,7 +4,12 @@
 // Swapping numbers costs credits on both sides. While waiting for the other side we HOLD
 // the credits. If the swap happens the hold is CAPTURED (spent); if not it's RELEASED (given back).
 
-export type EntryKind = "welcome" | "purchase" | "hold" | "release" | "capture" | "grant" | "spend";
+export type EntryKind = "welcome" | "purchase" | "hold" | "release" | "capture" | "grant" | "spend" | "expire";
+
+// Free vs bought credits: welcome and weekly credits are FREE and never carry over to the next
+// week; purchases and admin grants are BOUGHT and never expire. Free credits are used first.
+const isFree = (e: Entry) => e.kind === "welcome" || e.kind === "expire" || (e.kind === "grant" && e.key.startsWith("weekly:"));
+
 
 export interface Entry {
   phone: string;
@@ -42,6 +47,58 @@ export class Ledger {
 
   balance(phone: string): number {
     return this.entries.filter((e) => e.phone === phone).reduce((sum, e) => sum + e.delta, 0);
+  }
+
+  /**
+   * Free credits still unused. Walks the history in order: free credits are used before bought
+   * ones, and a released hold goes back to the pool it came from.
+   */
+  freeLeft(phone: string): number {
+    let free = 0;
+    let bought = 0;
+    const fromFree = new Map<string, number>(); // hold key → how much of it was free credits
+    for (const e of this.entries) {
+      if (e.phone !== phone) continue;
+      if (isFree(e)) free += e.delta;
+      else if (e.kind === "purchase" || e.kind === "grant") bought += e.delta;
+      else if (e.kind === "hold" || e.kind === "spend") {
+        const take = -e.delta;
+        const f = Math.min(Math.max(free, 0), take);
+        free -= f;
+        bought -= take - f;
+        fromFree.set(e.key.replace(/^hold:/, ""), f);
+      } else if (e.kind === "release") {
+        const f = Math.min(fromFree.get(e.key.replace(/^release:/, "")) ?? 0, e.delta);
+        free += f;
+        bought += e.delta - f;
+      }
+    }
+    return Math.max(0, free);
+  }
+
+  /** Bought credits still unused. */
+  boughtLeft(phone: string): number {
+    return this.balance(phone) - this.freeLeft(phone);
+  }
+
+  /**
+   * New week: unused free credits from last week disappear, then this week's free credits are
+   * added, so free credits are always exactly `amount` at the start of a week. Bought credits
+   * are untouched. Safe to call often (once per week key). Returns credits added.
+   */
+  weeklyReset(phone: string, amount: number, week: string): number {
+    if (amount <= 0 || this.keys.has(`weekly:${phone}:${week}`)) return 0;
+    const unused = this.freeLeft(phone);
+    if (unused > 0) this.add(phone, -unused, "expire", `expire:${phone}:${week}`);
+    this.add(phone, amount, "grant", `weekly:${phone}:${week}`);
+    return amount;
+  }
+
+  /** Free credits can never be more than `cap` (fixes anyone who got two lots in one week). */
+  capFree(phone: string, cap: number, week: string): number {
+    const extra = this.freeLeft(phone) - cap;
+    if (extra <= 0) return 0;
+    return this.add(phone, -extra, "expire", `cap:${phone}:${week}`) ? extra : 0;
   }
 
   history(phone: string): Entry[] {

@@ -70,7 +70,7 @@ This is the single source of truth. Update it when something changes.
 | | |
 |---|---|
 | Welcome | 3 free credits |
-| Weekly | **+3 free credits every week** (added on the person's first message from Monday, Harare time; they do stack) |
+| Weekly | **3 free credits every week** (from Monday, Harare time). Unused free credits **don't carry over**; free ones are used first; **bought credits never expire**. Admin GRANTs count as bought |
 | $1 | 2 credits |
 | $3 | 7 credits |
 | $5 | 13 credits |
@@ -152,6 +152,7 @@ Automatic admin alerts: blocked posts, medicine listing attempts, reports, new a
 | 20–21 Nov | Bundles **$1 = 2, $3 = 7, $5 = 13** credits; **3 free credits every week** (stacking) |
 | 21 Nov | **One-message search** (tester feedback: too many steps, compare with Facebook Marketplace) |
 | 21 Nov | Swap message shows the key facts; chat link pre-types a Scoutly hello; "today" and "this week" posts close when their time passes |
+| 22 Nov | **Free credits never carry over**: each week free credits reset to 3; bought credits are kept |
 | 22 Nov | "How it works" rewritten to explain credits clearly; sign-up consent, rules and How it works state that numbers are shared **only when both people agree** |
 | 21 Nov | **Price comparison stays core.** Plan: shops upload prices; Scoutly owns one photo per product; start with one category |
 
