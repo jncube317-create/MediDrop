@@ -16,6 +16,7 @@ export interface Lead {
   provider: string; // seller / provider phone
   customer: string; // buyer phone
   origin: "need" | "card"; // need = we sent the post to the provider; card = the buyer tapped a listing
+  chat?: Record<string, string>; // short chat-link code → full wa.me link (with the pre-typed hello)
   cost: number; // credits each side uses on a swap
   quote: string | null;
   status: LeadStatus;

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 // Scoutly conversation logic.
 //
 // Buyers post what they're looking for (a "need"): budget, when, where.
@@ -16,6 +17,7 @@ import * as wa from "./wa";
 import {
   AD_TAP_COST,
   BUNDLES,
+  CATEGORIES,
   ADMIN_TEST_BUNDLE,
   CARDS_PER_RESULT,
   CITIES,
@@ -352,6 +354,27 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const credits = (n: number) => plural(n, "credit");
 const isSample = (phone: string) => phone.startsWith("26300");
 const isAdmin = (phone: string) => Boolean(env.ADMIN_PHONE) && phone === env.ADMIN_PHONE;
+/**
+ * A short link (https://<our domain>/c/AbC12xYz9q) that opens the same WhatsApp chat with the same
+ * pre-typed hello. The code is random and unguessable; the full wa.me link is kept on the lead.
+ */
+function shortChat(lead: Lead, full: string): string {
+  if (!env.PUBLIC_URL) return full;
+  const code = randomBytes(8).toString("base64url").replace(/[-_]/g, "x").slice(0, 10);
+  lead.chat = { ...(lead.chat ?? {}), [code]: full };
+  return `${env.PUBLIC_URL}/c/${code}`;
+}
+
+/** Where a short chat link points, or null. */
+export function resolveChat(code: string): string | null {
+  if (!/^[A-Za-z0-9]{10}$/.test(code)) return null;
+  for (const l of leads.values()) if (l.chat?.[code]) return l.chat[code] ?? null;
+  return null;
+}
+
+/** Hi, hie, hey, hello, helo, howzit, good morning, sawubona, mhoro… all mean "show me the menu". */
+const GREETING = /^\s*(menu|start|hi+e*|hy|hey+|hai|hallo|hello+|helo+|howzit|hw|yo|sup|morning|afternoon|evening|good\s+(morning|afternoon|evening|day)|sawubona|salibonani|lotshani|mhoro|makadii|mangwanani|masikati|manheru)[\s!.,]*(scoutly)?[\s!.]*$/i;
+
 const clean = (t: string, max: number) => t.replace(/\s+/g, " ").trim().slice(0, max);
 
 async function prompt(u: User, fn: () => Promise<unknown>): Promise<void> {
@@ -427,12 +450,11 @@ function cardImage(l: Listing): string {
 /** Cars, houses and land must have at least one photo: buyers won't trust them without one. */
 const PHOTO_REQUIRED = new Set(["cars", "property"]);
 
-async function anythingElse(to: string, body = "Anything else we can help you with?"): Promise<void> {
-  await wa.sendButtons(to, body, [
-    { id: "menu:find", title: "Find something" },
-    { id: "menu:sell", title: "Sell or offer" },
-    { id: "menu:main", title: "Main menu" },
-  ]);
+/** Confirms an action and stops. No "anything else?" question after every step. */
+async function anythingElse(to: string, body: string): Promise<void> {
+  const users_ = users.get(to);
+  if (users_) users_.step = "MENU";
+  await wa.sendText(to, `${body.replace(/\s*(\n\n)?Anything else[^?]*\?\s*$/i, "").trim()}\n\n_Type MENU any time._`);
 }
 
 function leadsFor(needId: string): Lead[] {
@@ -577,12 +599,12 @@ async function conversation(m: Incoming): Promise<void> {
         next,
       );
     }
-    if (/^(menu|hi|hello|hey|start)$/i.test(text)) return showMenu(u, `Hi ${u.name} 👋`);
+    if (GREETING.test(text)) return showMenu(u, `Hi ${u.name} 👋`);
     return didntGetThat(u);
   }
 
   // ---- words that work anywhere (any capitals)
-  if (/^(menu|hi|hello|hey|start)$/i.test(text)) {
+  if (GREETING.test(text)) {
     if (u.step === "BUY_WAIT") return waitingForPayment(to);
     return showMenu(u, `Hi ${u.name} 👋`);
   }
@@ -739,6 +761,7 @@ async function conversation(m: Incoming): Promise<void> {
     }
 
     case "CAT_PICK": {
+      if (id === "cat:more") return askAnyCategory(u, true);
       const cat = id.startsWith("cat:") ? getCategory(id.slice(4)) : undefined;
       if (!cat) return didntGetThat(u);
       if (cat.pharmacyOnly && (u.draft.mode === "sell" || u.draft.mode === "ad") && !u.pharmacy) {
@@ -747,6 +770,7 @@ async function conversation(m: Incoming): Promise<void> {
         return void (await wa.sendText(to, `Only *licensed pharmacies* can list medicines on ${env.APP_NAME}. If you're a pharmacy, type PHARMACY to apply. Type MENU to do something else.`));
       }
       u.draft.category = cat.key;
+      u.draft.kind = cat.kind;
       if (u.draft.mode === "sell") return cat.kind === "item" ? askSellTitle(u) : askSellDesc(u);
       if (u.draft.mode === "ad") return askAdText(u);
       return u.draft.text ? createNeed(u) : askFindText(u);
@@ -1214,10 +1238,28 @@ async function quickFind(u: User, raw: string): Promise<void> {
   u.draft.understood = Boolean(got.category);
   if (medicineWord(text)) return findMedicine(u);
   const cat = getCategory(keepCategory ?? got.category ?? "");
-  if (!cat) return askKind(u, "find");
+  if (!cat) return askAnyCategory(u);
   u.draft.category = cat.key;
   u.draft.kind = cat.kind;
   return createNeed(u);
+}
+
+/**
+ * When the bot can't tell what a search is, it asks ONE question: which category. No "item or
+ * service?" step. The 9 most-used categories come first, the rest behind "More categories".
+ */
+const POPULAR = ["cars", "property", "appliances", "phones", "furniture", "building", "painting", "plumbing", "beauty"];
+
+async function askAnyCategory(u: User, more = false): Promise<void> {
+  u.step = "CAT_PICK";
+  u.draft.mode = u.draft.mode ?? "find";
+  const cats = more ? CATEGORIES.filter((c) => !POPULAR.includes(c.key)) : POPULAR.map((k) => getCategory(k)!).filter(Boolean);
+  const rows = cats.map((c) => ({ id: `cat:${c.key}`, title: c.name, description: fit(`e.g. ${c.example}`, 72) }));
+  if (!more) rows.push({ id: "cat:more", title: "➕ More categories", description: "Car parts, clothes, mechanics, events, printing, moving…" });
+  const what = u.draft.text ? fit(subjectOf(u.draft.text), 60) : "";
+  await prompt(u, () =>
+    wa.sendList(u.phone, what ? `Which category is *${what}* in?` : "Which category?", "Categories", rows.slice(0, 10), more ? "More categories" : "Categories"),
+  );
 }
 
 // ---------------------------------------------------------------- editing a search after the results
@@ -1290,7 +1332,7 @@ async function editSearch(u: User, needId: string, what: string): Promise<void> 
   }
   if (what === "cat") {
     u.draft = { ...base, category: undefined };
-    return askKind(u, "find");
+    return askAnyCategory(u);
   }
   u.draft = { ...base, anywhere: what === "any" };
   return createNeed(u);
@@ -1499,7 +1541,7 @@ async function askSellTitle(u: User): Promise<void> {
       u.phone,
       u.draft.category === "cars"
         ? "Which car is it? Type the *year, make and model*.\n\nFor example: _2014 Honda Fit_ or _Toyota Vitz 2010_"
-        : "What are you selling? Name it in a few words.\n\nFor example: _Defy combi fridge 250L_ or _Steel door, charcoal_",
+        : `What are you selling? Name it in a few words.\n\nFor example: _${getCategory(u.draft.category ?? "")?.listTitle ?? "what it is, brand and size"}_`,
     ),
   );
 }
@@ -1513,11 +1555,11 @@ async function askSellDesc(u: User): Promise<void> {
   u.step = "SELL_DESC";
   if (u.draft.kind === "service") {
     return prompt(u, () =>
-      wa.sendText(u.phone, "Describe your service in one or two lines. Buyers see this.\n\nFor example: _Carpenter. Wardrobes, doors, kitchen units. 10 years' experience._"),
+      wa.sendText(u.phone, `Describe your service in one or two lines. Buyers see this.\n\nFor example: _${getCategory(u.draft.category ?? "")?.listDesc ?? "what you do and your experience"}_`),
     );
   }
   await prompt(u, () =>
-    wa.sendButtons(u.phone, "Add a short description: size, model, condition, anything buyers should know.\n\nFor example: _Silver, A+ energy, boxed with warranty._", [
+    wa.sendButtons(u.phone, `Add a short description: size, model, condition, anything buyers should know.\n\nFor example: _${getCategory(u.draft.category ?? "")?.listDesc ?? "size, model and condition"}_`, [
       { id: "desc:skip", title: "Skip" },
     ]),
   );
@@ -1922,11 +1964,11 @@ async function connect(lead: Lead): Promise<void> {
 
   await wa.sendText(
     lead.customer,
-    `✅ *You're connected with ${seller}*\n\n${deal}\n\n📞 ${prettyPhone(lead.provider)}\n💬 Tap to chat (we've typed a hello for you): ${chatLink(lead.provider, buyerHello)}\n\nAgree the price before anything changes hands. Meet in a public place, check the item or work, and never pay a deposit before you've seen it.${l?.category === "pharmacy" ? "\n💊 Prescription medicines: take your prescription. The pharmacy must see it before selling." : ""}\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.customer))}.\n${LIABILITY}${l?.sample ? "\n\n(Sample seller for the demo: this number isn't real.)" : ""}`,
+    `✅ *You're connected with ${seller}*\n\n${deal}\n\n📞 ${prettyPhone(lead.provider)}\n💬 Tap to chat (we've typed a hello for you): ${shortChat(lead, chatLink(lead.provider, buyerHello))}\n\nAgree the price before anything changes hands. Meet in a public place, check the item or work, and never pay a deposit before you've seen it.${l?.category === "pharmacy" ? "\n💊 Prescription medicines: take your prescription. The pharmacy must see it before selling." : ""}\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.customer))}.\n${LIABILITY}${l?.sample ? "\n\n(Sample seller for the demo: this number isn't real.)" : ""}`,
   );
   await tell(
     lead.provider,
-    `✅ *New customer: ${buyer}* (via Scoutly)\n\n${deal}\n\n📞 ${prettyPhone(lead.customer)}\n💬 Tap to chat (we've typed a hello for you): ${chatLink(lead.customer, sellerHello)}\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.provider))}.\n${LIABILITY}`,
+    `✅ *New customer: ${buyer}* (via Scoutly)\n\n${deal}\n\n📞 ${prettyPhone(lead.customer)}\n💬 Tap to chat (we've typed a hello for you): ${shortChat(lead, chatLink(lead.customer, sellerHello))}\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.provider))}.\n${LIABILITY}`,
   );
   if (need) {
     if (need.connections >= MAX_CONNECTIONS_PER_NEED) {
@@ -2019,7 +2061,7 @@ async function showPosts(u: User): Promise<void> {
   const mylist = [...listings.values()].filter((l) => l.owner === u.phone).sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
   if (!mine.length && !mylist.length) {
     await wa.sendText(u.phone, "You don't have any posts yet.");
-    return anythingElse(u.phone);
+    return anythingElse(u.phone, "✅ Done.");
   }
   const statusWord = { OPEN: "Open", CLOSED: "Closed", EXPIRED: "Expired" };
   await prompt(u, () =>

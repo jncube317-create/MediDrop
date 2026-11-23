@@ -324,3 +324,10 @@ test("local words and a short, natural echo (22 Nov feedback)", () => {
   assert.equal(subjectOf("I need a plumber today"), "a plumber");
   assert.equal(subjectOf("gazebo, under $200"), "gazebo");
 });
+
+test("car searches are understood straight away, with budget and town", () => {
+  const towns = [{ key: "byo", name: "Bulawayo" }, { key: "gweru", name: "Gweru" }, { key: "other", name: "Other" }];
+  const a = understand("looking for a car budget 3000 in Gweru", towns);
+  assert.deepEqual([a.category, a.budgetCents, a.city], ["cars", 300000, "gweru"]);
+  assert.equal(understand("fuel saver around $2500", towns).category, "cars");
+});

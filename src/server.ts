@@ -4,7 +4,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { env, paynowConfigured } from "./env";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { handleIncoming, confirmPurchase, flushState, initState, type Incoming } from "./bot";
+import { handleIncoming, confirmPurchase, flushState, initState, resolveChat, type Incoming } from "./bot";
 import { MEDIA_DIR, SAFE_FILE } from "./media";
 
 const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 });
@@ -93,6 +93,13 @@ app.get("/", async () => ({ app: `${env.APP_NAME} demo`, status: "running" }));
 
 // Demo listing photos (public/demo) and photos people send the bot (MEDIA_DIR).
 const DEMO_DIR = join(process.cwd(), "public", "demo");
+// Short chat links from the swap message: /c/AbC12xYz9q → the WhatsApp chat with the pre-typed hello.
+app.get("/c/:code", async (req, reply) => {
+  const target = resolveChat((req.params as { code: string }).code);
+  if (!target) return reply.code(404).type("text/plain").send("This chat link has expired. Open Scoutly on WhatsApp and type MENU.");
+  return reply.redirect(target, 302);
+});
+
 app.get("/img/:file", async (req, reply) => {
   const file = (req.params as { file: string }).file;
   if (!/^[a-z0-9-]+\.jpg$/.test(file)) return reply.code(404).send();

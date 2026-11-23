@@ -11,30 +11,32 @@ export interface Category {
   people: string; // "carpenters", used in messages
   swapCost: number; // credits each side uses when numbers are swapped
   pharmacyOnly?: boolean; // only admin-approved, licensed pharmacies can list here
+  listTitle?: string; // example name when listing (items), always from this category
+  listDesc: string; // example description when listing, always from this category
 }
 
 export const CATEGORIES: Category[] = [
   // ---- items (new and pre-loved)
-  { key: "cars", kind: "item", name: "Cars & bakkies", example: "Toyota Vitz under $3,000 / single cab bakkie", people: "car sellers", swapCost: 1 },
-  { key: "pharmacy", kind: "item", name: "Pharmacy & medicines", example: "Panado tablets", people: "licensed pharmacies", swapCost: 1, pharmacyOnly: true },
-  { key: "carparts", kind: "item", name: "Car parts", example: "Corolla 2008 side mirror", people: "parts sellers", swapCost: 1 },
-  { key: "appliances", kind: "item", name: "Fridges & appliances", example: "Combi fridge / 2-plate stove / washing machine", people: "sellers", swapCost: 1 },
-  { key: "furniture", kind: "item", name: "Furniture & household", example: "3-seater couch / double bed", people: "sellers", swapCost: 1 },
-  { key: "building", kind: "item", name: "Doors & building supply", example: "Steel front door / roofing sheets", people: "suppliers", swapCost: 1 },
-  { key: "phones", kind: "item", name: "Phones & electronics", example: "Samsung A15 / used laptop", people: "sellers", swapCost: 1 },
-  { key: "fashion", kind: "item", name: "Clothes & shoes", example: "Ladies sandals size 5 / school uniforms", people: "sellers", swapCost: 1 },
-  { key: "property", kind: "item", name: "Houses & rentals", example: "2-bed to rent in Hillside", people: "landlords and agents", swapCost: 1 },
+  { key: "cars", kind: "item", name: "Cars & bakkies", example: "Toyota Vitz under $3,000 / single cab bakkie", people: "car sellers", swapCost: 1, listTitle: "2014 Honda Fit", listDesc: "Auto, 1.3, papers in order, new tyres." },
+  { key: "pharmacy", kind: "item", name: "Pharmacy & medicines", example: "Panado tablets", people: "licensed pharmacies", swapCost: 1, pharmacyOnly: true, listTitle: "Panado 500mg, 24 tablets", listDesc: "Sealed pack, expiry 2027." },
+  { key: "carparts", kind: "item", name: "Car parts", example: "Corolla 2008 side mirror", people: "parts sellers", swapCost: 1, listTitle: "Toyota Hilux front bumper", listDesc: "Fits 2012 to 2016 models. Original part, no cracks." },
+  { key: "appliances", kind: "item", name: "Fridges & appliances", example: "Combi fridge / 2-plate stove / washing machine", people: "sellers", swapCost: 1, listTitle: "LG DVD player", listDesc: "Works perfectly, with remote. Or: Samsung microwave 23L, boxed." },
+  { key: "furniture", kind: "item", name: "Furniture & household", example: "3-seater couch / double bed", people: "sellers", swapCost: 1, listTitle: "3-seater couch, grey", listDesc: "Solid wood frame, no tears, 2 years old." },
+  { key: "building", kind: "item", name: "Doors & building supply", example: "Steel front door / roofing sheets", people: "suppliers", swapCost: 1, listTitle: "Steel security door, charcoal", listDesc: "2.1m x 0.9m, frame and lock included." },
+  { key: "phones", kind: "item", name: "Phones & electronics", example: "Samsung A15 / used laptop", people: "sellers", swapCost: 1, listTitle: "HP laptop, 8GB RAM", listDesc: "Core i5, 256GB, charger included, battery holds 4 hours." },
+  { key: "fashion", kind: "item", name: "Clothes & shoes", example: "Ladies sandals size 5 / school uniforms", people: "sellers", swapCost: 1, listTitle: "Nike Air Force 1, size 8", listDesc: "Worn twice, original box." },
+  { key: "property", kind: "item", name: "Houses & rentals", example: "2-bed to rent in Hillside", people: "landlords and agents", swapCost: 1, listTitle: "2-bedroom flat to rent, Hillside", listDesc: "Water tank, solar backup, available 1 December." },
   // ---- services
-  { key: "carpentry", kind: "service", name: "Carpentry & furniture", example: "Fix a wardrobe door / build kitchen units", people: "carpenters", swapCost: 1 },
-  { key: "mechanic", kind: "service", name: "Mechanic & car repair", example: "Car won't start / service and brakes", people: "mechanics", swapCost: 1 },
-  { key: "plumbing", kind: "service", name: "Plumbing", example: "Leaking geyser / blocked drain", people: "plumbers", swapCost: 1 },
-  { key: "electrical", kind: "service", name: "Electrical & solar", example: "Install a solar system / fix wiring", people: "electricians", swapCost: 1 },
-  { key: "painting", kind: "service", name: "Building & painting", example: "Paint 6 rooms, Dulux, fix and supply", people: "builders and painters", swapCost: 1 },
-  { key: "beauty", kind: "service", name: "Hair & beauty", example: "Makeup for a wedding / braids at home", people: "hair and beauty pros", swapCost: 1 },
-  { key: "events", kind: "service", name: "Venues & events", example: "Venue for 40 people / DJ / catering", people: "event providers", swapCost: 1 },
-  { key: "printing", kind: "service", name: "Printing & branding", example: "200 vinyl stickers / T-shirt printing", people: "printers", swapCost: 1 },
-  { key: "moving", kind: "service", name: "Moving & transport", example: "Move a fridge from City Hall to Country Park", people: "movers", swapCost: 1 },
-  { key: "other", kind: "service", name: "Something else", example: "Tell us what you need in a few words", people: "people", swapCost: 1 },
+  { key: "carpentry", kind: "service", name: "Carpentry & furniture", example: "Fix a wardrobe door / build kitchen units", people: "carpenters", swapCost: 1, listDesc: "Carpenter. Wardrobes, doors, kitchen units. 10 years' experience." },
+  { key: "mechanic", kind: "service", name: "Mechanic & car repair", example: "Car won't start / service and brakes", people: "mechanics", swapCost: 1, listDesc: "Mobile mechanic. Services, brakes and diagnostics. I come to you." },
+  { key: "plumbing", kind: "service", name: "Plumbing", example: "Leaking geyser / blocked drain", people: "plumbers", swapCost: 1, listDesc: "Plumber. Geysers, leaks and blocked drains. Same-day call-outs." },
+  { key: "electrical", kind: "service", name: "Electrical & solar", example: "Install a solar system / fix wiring", people: "electricians", swapCost: 1, listDesc: "Electrician. House wiring, DB boards and solar installs." },
+  { key: "painting", kind: "service", name: "Building & painting", example: "Paint 6 rooms, Dulux, fix and supply", people: "builders and painters", swapCost: 1, listDesc: "Painter and builder. Interior, exterior, plastering and tiling." },
+  { key: "beauty", kind: "service", name: "Hair & beauty", example: "Makeup for a wedding / braids at home", people: "hair and beauty pros", swapCost: 1, listDesc: "Hairdresser. Braids, wigs and cornrows. Home visits in town." },
+  { key: "events", kind: "service", name: "Venues & events", example: "Venue for 40 people / DJ / catering", people: "event providers", swapCost: 1, listDesc: "Garden venue for up to 150 guests, with chairs, tables and parking." },
+  { key: "printing", kind: "service", name: "Printing & branding", example: "200 vinyl stickers / T-shirt printing", people: "printers", swapCost: 1, listDesc: "T-shirts, banners, stickers and business cards. 24-hour turnaround." },
+  { key: "moving", kind: "service", name: "Moving & transport", example: "Move a fridge from City Hall to Country Park", people: "movers", swapCost: 1, listDesc: "1-tonne truck for house moves and deliveries, in town and nationwide." },
+  { key: "other", kind: "service", name: "Something else", example: "Tell us what you need in a few words", people: "people", swapCost: 1, listDesc: "Cleaner. Homes and offices, own supplies, reliable." },
 ];
 
 export interface City {

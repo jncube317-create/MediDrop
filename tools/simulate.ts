@@ -163,10 +163,7 @@ async function post(phone: string, o: { text: string; kind: "item" | "service"; 
     o.where === "any" ? "anywhere in Zim" : "",
   ].filter(Boolean).join(", ");
   let r = await send(phone, { text: extra ? `${o.text}, ${extra}` : o.text }, wait);
-  if (has(r, phone, /kind:item/)) {
-    await send(phone, { reply: `kind:${o.kind}` });
-    r = await send(phone, { reply: `cat:${o.cat}` }, wait);
-  }
+  if (has(r, phone, /cat:more/)) r = await send(phone, { reply: `cat:${o.cat}` }, wait);
   return r;
 }
 
@@ -230,7 +227,15 @@ async function main(): Promise<void> {
     await sleep(1300);
     r = flush();
     check(has(r, CUSTOMER, /connected with Busi M\.\*[\s\S]*Nissan NP300 single cab · \$8,500[\s\S]*Wanted: This week[\s\S]*1 credit used\. Balance: 2 credits/), "seller accepts: numbers swapped, credits spent, key facts shown");
-    check(has(r, CUSTOMER, /wa\.me\/263000000012\?text=Hi%20Busi%20M\.%2C%20it's%20Sizwe[^ ]*Scoutly/), "chat link pre-types a hello that says it came from Scoutly");
+    {
+      const msg = r.find((m) => m.to === CUSTOMER && /Tap to chat/.test(m.body ?? ""))?.body ?? "";
+      const code = msg.match(/https:\/\/scoutly-demo\.example\/c\/([A-Za-z0-9]{10})\b/)?.[1];
+      check(Boolean(code) && !/wa\.me/.test(msg), "chat link is short (no long wa.me link in the message)");
+      const res = await fetch(`http://localhost:${BOT_PORT}/c/${code}`, { redirect: "manual" });
+      const to = res.headers.get("location") ?? "";
+      check(res.status === 302 && /wa\.me\/263000000012\?text=Hi%20Busi%20M\.%2C%20it's%20Sizwe[^ ]*Scoutly/.test(to), "short link opens the chat with the pre-typed Scoutly hello");
+      check((await fetch(`http://localhost:${BOT_PORT}/c/AAAAAAAAAA`, { redirect: "manual" })).status === 404, "made-up short links go nowhere");
+    }
     check(has(r, CUSTOMER, /found:yes:N-1001/), "asks whether they found what they needed");
     r = await send(CUSTOMER, { reply: "found:yes:N-1001" });
     check(has(r, CUSTOMER, /closed N-1001, so nobody else gets it/), "found it: post closed");
@@ -394,8 +399,9 @@ async function main(): Promise<void> {
     r = await send(CUSTOMER, { text: "$600" });
     check(has(r, CUSTOMER, /Defy combi fridge/) && has(r, CUSTOMER, /up to \$600/), "changing the budget re-runs the search");
     r = await send(CUSTOMER, { text: "something nice for my mom" });
-    check(has(r, CUSTOMER, /kind:item/) && has(r, CUSTOMER, /kind:service/), "only asks the category when it can't tell");
-    await send(CUSTOMER, { reply: "kind:item" });
+    check(has(r, CUSTOMER, /cat:more/) && !has(r, CUSTOMER, /kind:item/), "only asks the category when it can't tell (no item-or-service step)");
+    r = await send(CUSTOMER, { reply: "cat:more" });
+    check(has(r, CUSTOMER, /cat:fashion/), "More categories shows the rest");
     r = await send(CUSTOMER, { reply: "cat:fashion" });
     check(has(r, CUSTOMER, /Clothes & shoes · Bulawayo/) && !has(r, CUSTOMER, /What's your budget/), "after picking the category it goes straight to results");
 
@@ -404,7 +410,7 @@ async function main(): Promise<void> {
     check(!has(r, CUSTOMER, /kind:item/) && has(r, CUSTOMER, /Cars & bakkies · up to \$4,000 · Bulawayo/), "local words: 'fuel saver' goes straight to Cars with the budget");
     check(!has(r, CUSTOMER, /Looking for "Looking for/), "no robotic repeat of the whole message");
     r = await send(CUSTOMER, { text: "I need a gazebo for my garden party, budget $200" });
-    check(has(r, CUSTOMER, /Got it: \*a gazebo for my garden party\*\. Is that something to buy, or a service/) && has(r, CUSTOMER, /Something to buy/), "unclear search: short natural question, no budget in the echo");
+    check(has(r, CUSTOMER, /Which category is \*a gazebo for my garden party\* in\?/) && has(r, CUSTOMER, /cat:more/) && !has(r, CUSTOMER, /kind:item/), "unclear search: one category question, no item-or-service step");
     await send(CUSTOMER, { text: "MENU" });
 
     // ---- Selling a car: year required, mileage asked, at least 1 photo required
@@ -449,6 +455,12 @@ async function main(): Promise<void> {
     check(has(r, CUSTOMER, /Seller: (🆕 new on Scoutly|🥉 Bronze)/) && !has(r, CUSTOMER, /🆕 New · ⭐ New/), "badges clearly describe the seller, not the item");
     check(has(r, CUSTOMER, /1 match so far\. Tap \*🔔 Alert me\*/), "one result: honest wording that leads with Alert me");
     await send(CUSTOMER, { text: "MENU" });
+
+    // ---- greetings: hi, hie, hey, howzit all open the menu; no "anything else?" after actions
+    for (const g of ["Hie", "hiee", "Hey", "howzit", "Good morning"]) {
+      r = await send(CUSTOMER, { text: g });
+      check(has(r, CUSTOMER, /Hi Sizwe 👋/), `"${g}" opens the menu`);
+    }
 
     // ---- 50c test bundle: admin only
     r = await send(CUSTOMER, { reply: "menu:credits" });
