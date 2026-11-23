@@ -152,6 +152,7 @@ Automatic admin alerts: blocked posts, medicine listing attempts, reports, new a
 | 20–21 Nov | Bundles **$1 = 2, $3 = 7, $5 = 13** credits; **3 free credits every week** (stacking) |
 | 21 Nov | **One-message search** (tester feedback: too many steps, compare with Facebook Marketplace) |
 | 21 Nov | Swap message shows the key facts; chat link pre-types a Scoutly hello; "today" and "this week" posts close when their time passes |
+| 23 Nov | Search understands **brands** (Nike, Adidas, Samsung, HP, Defy, Hisense…), **singular/plural** (shoe = shoes) and **typos** (niker → Nike, samsang → Samsung), so most searches skip the category question |
 | 23 Nov | No "anything else?" after every step; greetings like *hie, hey, howzit, good morning* open the menu; listing examples match the chosen category; short chat links (`/c/<code>`) instead of long wa.me links; unclear searches ask **one** category question (no item-or-service step) |
 | 22 Nov | Search fixes from Joshua's test: local car words (fuel saver, ex-Jap, Aqua…), short natural question when unclear, branded category card instead of "No photo yet", **photo required for cars and houses**, cars need year + mileage, seller badges reworded, seller town always shown, 0-credit warning up front, honest "1 match so far" wording, STATS lists searches the bot didn't understand |
 | 22 Nov | **Free credits never carry over**: each week free credits reset to 3; bought credits are kept |

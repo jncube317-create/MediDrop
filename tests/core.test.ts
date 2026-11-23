@@ -331,3 +331,23 @@ test("car searches are understood straight away, with budget and town", () => {
   assert.deepEqual([a.category, a.budgetCents, a.city], ["cars", 300000, "gweru"]);
   assert.equal(understand("fuel saver around $2500", towns).category, "cars");
 });
+
+test("brands, singular words and typos go straight to the right category", () => {
+  for (const [q, cat] of [
+    ["I'm looking for a Nike shoe", "fashion"],
+    ["looking for niker shoes", "fashion"],
+    ["Nikee sneaker size 8", "fashion"],
+    ["adiddas tracksuit", "fashion"],
+    ["samsang phone", "phones"],
+    ["hp laptop", "phones"],
+    ["fridg under $200", "appliances"],
+    ["Defy stove", "appliances"],
+    ["LG dvd player", "appliances"],
+    ["toyota vits", "cars"],
+    ["sofaa for my lounge", "furniture"],
+  ] as const) assert.equal(guessCategory(q), cat, q);
+  assert.equal(guessCategory("I would like a sofa"), "furniture", "'like' is never read as 'nike'");
+  assert.equal(guessCategory("good deal on a fridge"), "appliances", "'deal' is never read as 'dell'");
+  assert.equal(guessCategory("water pump"), undefined, "'pump' is never read as 'puma'");
+  assert.equal(guessCategory("something nice for my mom"), undefined, "still asks when there's nothing to go on");
+});

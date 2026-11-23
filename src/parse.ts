@@ -7,13 +7,13 @@ import type { WhenKey } from "./data";
 /** Words and short phrases that point to a category. Phrases count double. */
 const WORDS: Record<string, string[]> = {
   // items
-  cars: ["fuel saver", "fuel savers", "ex jap", "ex-jap", "toyota aqua", "toyota wish", "honda fit", "fit hybrid", "nissan note", "nissan march", "toyota ist", "sienta", "noah", "voxy", "hiace", "raum", "passo", "belta", "spacio", "auris", "harrier", "forester", "golf", "polo", "car", "cars", "vehicle", "vitz", "honda fit", "toyota", "nissan", "mazda", "bmw", "mercedes", "benz", "hilux", "ranger", "bakkie", "pickup", "sedan", "suv", "hatchback", "corolla", "isuzu", "kombi", "quantum", "truck", "single cab", "double cab", "np300", "navara", "prado", "rav4", "demio", "axio", "allion", "premio"],
+  cars: ["motorbike", "motorcycle", "bike", "bicycle", "fuel saver", "fuel savers", "ex jap", "ex-jap", "toyota aqua", "toyota wish", "honda fit", "fit hybrid", "nissan note", "nissan march", "toyota ist", "sienta", "noah", "voxy", "hiace", "raum", "passo", "belta", "spacio", "auris", "harrier", "forester", "golf", "polo", "car", "cars", "vehicle", "vitz", "honda fit", "toyota", "nissan", "mazda", "bmw", "mercedes", "benz", "hilux", "ranger", "bakkie", "pickup", "sedan", "suv", "hatchback", "corolla", "isuzu", "kombi", "quantum", "truck", "single cab", "double cab", "np300", "navara", "prado", "rav4", "demio", "axio", "allion", "premio"],
   carparts: ["tyre", "tyres", "tire", "tires", "rims", "gearbox", "bumper", "headlight", "headlights", "spares", "spare parts", "car parts", "exhaust", "radiator", "shocks", "side mirror", "brake pads", "alternator", "car battery"],
-  appliances: ["fridge", "fridges", "refrigerator", "freezer", "deep freezer", "stove", "microwave", "washing machine", "kettle", "tv", "television", "aircon", "air conditioner", "heater", "geyser", "iron", "blender", "toaster", "dishwasher", "gas stove", "hot plate"],
-  furniture: ["sofa", "couch", "lounge suite", "bed", "mattress", "table", "chair", "chairs", "wardrobe", "desk", "cabinet", "dining", "dining set", "bunk bed", "headboard", "dressing table", "bookshelf", "curtains", "carpet"],
-  building: ["jojo", "jojo tank", "water tank", "door", "doors", "window", "windows", "cement", "bricks", "roofing", "roofing sheets", "tiles", "timber", "gate", "steel door", "sand", "river sand", "pit sand", "quarry", "ibr", "zinc", "paint tin", "wall tiles"],
-  phones: ["phone", "phones", "iphone", "samsung", "laptop", "laptops", "tablet", "ipad", "smartphone", "charger", "airpods", "computer", "ps5", "ps4", "playstation", "xbox", "earphones", "speaker", "router", "camera", "smartwatch"],
-  fashion: ["shoes", "sneakers", "dress", "dresses", "clothes", "jacket", "sandals", "handbag", "jeans", "shirt", "suit", "uniform", "uniforms", "heels", "boots", "skirt", "trousers", "hoodie", "tracksuit"],
+  appliances: ["defy", "hisense", "kic", "capri", "univa", "sinotec", "telefunken", "bosch", "kenwood", "russell hobbs", "dvd player", "dvd", "decoder", "home theatre", "fridge", "fridges", "refrigerator", "freezer", "deep freezer", "stove", "microwave", "washing machine", "kettle", "tv", "television", "aircon", "air conditioner", "heater", "geyser", "iron", "blender", "toaster", "dishwasher", "gas stove", "hot plate"],
+  furniture: ["ottoman", "recliner", "sofa", "couch", "lounge suite", "bed", "mattress", "table", "chair", "chairs", "wardrobe", "desk", "cabinet", "dining", "dining set", "bunk bed", "headboard", "dressing table", "bookshelf", "curtains", "carpet"],
+  building: ["roof", "jojo", "jojo tank", "water tank", "door", "doors", "window", "windows", "cement", "bricks", "roofing", "roofing sheets", "tiles", "timber", "gate", "steel door", "sand", "river sand", "pit sand", "quarry", "ibr", "zinc", "paint tin", "wall tiles"],
+  phones: ["cable", "huawei", "tecno", "infinix", "itel", "xiaomi", "redmi", "oppo", "nokia", "hp", "dell", "lenovo", "acer", "asus", "macbook", "apple", "sony", "jbl", "phone", "phones", "iphone", "samsung", "laptop", "laptops", "tablet", "ipad", "smartphone", "charger", "airpods", "computer", "ps5", "ps4", "playstation", "xbox", "earphones", "speaker", "router", "camera", "smartwatch"],
+  fashion: ["polo shirt", "nike", "adidas", "puma", "jordan", "jordans", "air force", "converse", "vans", "reebok", "new balance", "timberland", "crocs", "gucci", "zara", "shoe", "sneaker", "shoes", "sneakers", "dress", "dresses", "clothes", "jacket", "sandals", "handbag", "jeans", "shirt", "suit", "uniform", "uniforms", "heels", "boots", "skirt", "trousers", "hoodie", "tracksuit"],
   property: ["boarding house", "room to rent", "rooms to rent", "house", "room", "rooms", "flat", "apartment", "cottage", "stand", "land", "plot", "rent", "rental", "to rent", "lodge", "bedroom", "bedroomed", "office space", "shop space", "boarding", "accommodation", "garden flat", "townhouse"],
   // services
   carpentry: ["carpenter", "carpentry", "cupboards", "kitchen units", "built in", "built-in", "fitted wardrobe"],
@@ -44,12 +44,50 @@ export interface Understood {
 const norm = (t: string) => ` ${t.toLowerCase().replace(/[^a-z0-9$ ]/g, " ").replace(/\s+/g, " ").trim()} `;
 
 /** Category with the most hits. Undefined when nothing matches or two categories tie. */
+/** Plural and singular count as the same word: "shoes" = "shoe". */
+const stemWord = (w: string) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w);
+
+/** Typos up to 1 letter (2 for long words): "niker" → "nike", "samsang" → "samsung", "fridg" → "fridge". */
+function closeEnough(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (a.length < 4 || b.length < 4) return false;
+  const max = Math.min(a.length, b.length) >= 7 ? 2 : 1;
+  if (Math.abs(a.length - b.length) > max) return false;
+  // Damerau-Levenshtein (adjacent swaps count as one mistake)
+  const d: number[][] = Array.from({ length: a.length + 1 }, (_, i) => Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)));
+  for (let i = 1; i <= a.length; i++)
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i]![j] = Math.min(d[i - 1]![j]! + 1, d[i]![j - 1]! + 1, d[i - 1]![j - 1]! + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i]![j] = Math.min(d[i]![j]!, d[i - 2]![j - 2]! + 1);
+    }
+  return d[a.length]![b.length]! <= max;
+}
+
+/** Everyday words that must never be "corrected" into a product (like → nike, bake → bike). */
+const NOT_TYPOS = new Set([
+  "like", "look", "looking", "need", "want", "have", "with", "from", "this", "that", "some", "cheap", "good", "used", "near", "town", "week", "today", "please", "anyone",
+  "selling", "buying", "price", "budget", "under", "around", "about", "make", "made", "more", "less", "best", "nice", "very", "much", "time", "home", "house", "work",
+  "deal", "deals", "dear", "bell", "sell", "tell", "well", "pump", "item", "items", "acre", "acres", "song", "cross", "gold", "hand", "band", "roof", "cable", "boost", "pole", "bake", "cake", "mike", "lake", "hike", "pike", "fine", "fire", "wire", "tire", "hire", "mine", "line", "mind", "kind", "find", "door", "bare", "care", "core",
+]);
+
+/** Category with the most hits. Undefined when nothing matches or two categories tie. */
 export function guessCategory(text: string): string | undefined {
   const t = norm(text);
+  const tokens = t.trim().split(" ").filter(Boolean).map(stemWord);
   const scores = new Map<string, number>();
   for (const [key, words] of Object.entries(WORDS)) {
     let s = 0;
-    for (const w of words) if (t.includes(` ${w.replace(/-/g, " ")} `)) s += w.includes(" ") ? 2 : 1;
+    for (const w of words) {
+      const word = w.replace(/-/g, " ");
+      if (word.includes(" ")) {
+        if (t.includes(` ${word} `)) s += 2; // phrases: exact
+        continue;
+      }
+      const target = stemWord(word);
+      if (tokens.includes(target)) s += 1;
+      else if (tokens.some((tok) => !NOT_TYPOS.has(tok) && closeEnough(tok, target))) s += 0.75; // a typo counts, a bit less
+    }
     if (s) scores.set(key, s);
   }
   // "fix my fridge", "install solar": a repair word turns an item into a job.
