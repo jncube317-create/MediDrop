@@ -19,6 +19,7 @@ export const CATEGORIES: Category[] = [
   // ---- items (new and pre-loved)
   { key: "cars", kind: "item", name: "Cars & bakkies", example: "Toyota Vitz under $3,000 / single cab bakkie", people: "car sellers", swapCost: 1, listTitle: "2014 Honda Fit", listDesc: "Auto, 1.3, papers in order, new tyres." },
   { key: "pharmacy", kind: "item", name: "Pharmacy & medicines", example: "Panado tablets", people: "licensed pharmacies", swapCost: 1, pharmacyOnly: true, listTitle: "Panado 500mg, 24 tablets", listDesc: "Sealed pack, expiry 2027." },
+  { key: "groceries", kind: "item", name: "Groceries", example: "Cooking oil 2L / mealie meal 10kg / sugar 2kg", people: "shops", swapCost: 1, listTitle: "Olivine cooking oil 2L", listDesc: "Sealed, best before March 2027." },
   { key: "carparts", kind: "item", name: "Car parts", example: "Corolla 2008 side mirror", people: "parts sellers", swapCost: 1, listTitle: "Toyota Hilux front bumper", listDesc: "Fits 2012 to 2016 models. Original part, no cracks." },
   { key: "appliances", kind: "item", name: "Fridges & appliances", example: "Combi fridge / 2-plate stove / washing machine", people: "sellers", swapCost: 1, listTitle: "LG DVD player", listDesc: "Works perfectly, with remote. Or: Samsung microwave 23L, boxed." },
   { key: "furniture", kind: "item", name: "Furniture & household", example: "3-seater couch / double bed", people: "sellers", swapCost: 1, listTitle: "3-seater couch, grey", listDesc: "Solid wood frame, no tears, 2 years old." },

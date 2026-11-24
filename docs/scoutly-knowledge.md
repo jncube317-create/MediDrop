@@ -100,6 +100,18 @@ MENU, HI, HELP, TERMS, CREDITS, STOP (alerts off), PHARMACY (apply as a pharmacy
 | `VERIFY 0771234567` | ✅ badge |
 | `ADS` | Ads waiting, with Approve/Reject buttons |
 | `PHARMACY 0771234567` / `UNPHARMACY …` | Approve a pharmacy, or remove one (pauses its medicine listings) |
+| Photo captioned `ADD Olivine cooking oil 2L` | Add a product with Scoutly's own photo (add `\| carparts` for spare parts). `ADD …` as text adds it without a photo |
+| Photo captioned `PHOTO PR-001` | Set or change a product's photo |
+| `PRODUCTS` | The product list (shows which have no photo) |
+| `SHOP 0771234567` / `UNSHOP …` | Approve a shop, or remove it and its prices |
+
+### Shop price comparison (groceries and motor spares)
+1. **Scoutly owns the product list and photos.** Shops never upload pictures.
+2. **Shops join** by typing SHOP and sending name, address and hours in one message. Admin approves (🏪). They're told their WhatsApp number is shown to shoppers.
+3. **Shops send prices only:** typed lines (`Olivine cooking oil 2L 3.80`) or an Excel/CSV file (product column, price column). Small typos match; sizes must match exactly. Unknown products go to the admin to add.
+4. **Shoppers** typing e.g. "cheapest cooking oil" see the product photo and shops cheapest first, with how old each price is. Older than 14 days = ⚠️; older than 30 days = hidden. Tapping a shop shows address, hours, number and chat link **free (no credits)**. "Ask sellers too" turns it into a normal post. Car searches never show spare-part prices.
+5. Monday 8am reminder to shops. It only reaches shops that messaged in the last 24 hours until a Meta template is approved.
+6. Data: Supabase table `products`; shop details sit on the shop's user record.
 
 Automatic admin alerts: blocked posts, medicine listing attempts, reports, new ads to approve, pharmacy applications (with Approve/Reject).
 
@@ -152,6 +164,7 @@ Automatic admin alerts: blocked posts, medicine listing attempts, reports, new a
 | 20–21 Nov | Bundles **$1 = 2, $3 = 7, $5 = 13** credits; **3 free credits every week** (stacking) |
 | 21 Nov | **One-message search** (tester feedback: too many steps, compare with Facebook Marketplace) |
 | 21 Nov | Swap message shows the key facts; chat link pre-types a Scoutly hello; "today" and "this week" posts close when their time passes |
+| 24 Nov | **Shop price comparison built** for groceries and motor spares (see section 2). Shop contact is **free** for shoppers; shops are **free** at first (charge later for featured spots); shops' numbers are public with their consent |
 | 23 Nov | Search understands **brands** (Nike, Adidas, Samsung, HP, Defy, Hisense…), **singular/plural** (shoe = shoes) and **typos** (niker → Nike, samsang → Samsung), so most searches skip the category question |
 | 23 Nov | No "anything else?" after every step; greetings like *hie, hey, howzit, good morning* open the menu; listing examples match the chosen category; short chat links (`/c/<code>`) instead of long wa.me links; unclear searches ask **one** category question (no item-or-service step) |
 | 22 Nov | Search fixes from Joshua's test: local car words (fuel saver, ex-Jap, Aqua…), short natural question when unclear, branded category card instead of "No photo yet", **photo required for cars and houses**, cars need year + mileage, seller badges reworded, seller town always shown, 0-credit warning up front, honest "1 match so far" wording, STATS lists searches the bot didn't understand |

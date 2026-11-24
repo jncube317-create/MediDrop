@@ -38,6 +38,24 @@ export async function savePhoto(mediaId: string): Promise<string | null> {
   }
 }
 
+/** Downloads any file someone sent (e.g. a shop's price spreadsheet). Null if it failed or is too big. */
+export async function downloadMedia(mediaId: string, maxBytes = 5 * 1024 * 1024): Promise<{ bytes: Buffer; mime: string } | null> {
+  try {
+    const meta = await fetch(`${graph()}/${encodeURIComponent(mediaId)}`, { headers: auth() });
+    if (!meta.ok) throw new Error(`media lookup HTTP ${meta.status}`);
+    const { url, mime_type: mime } = (await meta.json()) as { url?: string; mime_type?: string };
+    if (!url) throw new Error("no media url");
+    const file = await fetch(url, { headers: auth() });
+    if (!file.ok) throw new Error(`media download HTTP ${file.status}`);
+    const bytes = Buffer.from(await file.arrayBuffer());
+    if (bytes.length > maxBytes) throw new Error("file too big");
+    return { bytes, mime: mime ?? "" };
+  } catch (err) {
+    console.error("[MEDIA] could not download file:", err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 export function demoPhoto(file: string): string {
   return `${env.PUBLIC_URL}/img/${file}`;
 }

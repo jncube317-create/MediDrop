@@ -8,7 +8,8 @@ import type { WhenKey } from "./data";
 const WORDS: Record<string, string[]> = {
   // items
   cars: ["motorbike", "motorcycle", "bike", "bicycle", "fuel saver", "fuel savers", "ex jap", "ex-jap", "toyota aqua", "toyota wish", "honda fit", "fit hybrid", "nissan note", "nissan march", "toyota ist", "sienta", "noah", "voxy", "hiace", "raum", "passo", "belta", "spacio", "auris", "harrier", "forester", "golf", "polo", "car", "cars", "vehicle", "vitz", "honda fit", "toyota", "nissan", "mazda", "bmw", "mercedes", "benz", "hilux", "ranger", "bakkie", "pickup", "sedan", "suv", "hatchback", "corolla", "isuzu", "kombi", "quantum", "truck", "single cab", "double cab", "np300", "navara", "prado", "rav4", "demio", "axio", "allion", "premio"],
-  carparts: ["tyre", "tyres", "tire", "tires", "rims", "gearbox", "bumper", "headlight", "headlights", "spares", "spare parts", "car parts", "exhaust", "radiator", "shocks", "side mirror", "brake pads", "alternator", "car battery"],
+  groceries: ["cooking oil", "mealie meal", "maize meal", "roller meal", "sugar", "rice", "flour", "bread", "milk", "soap", "salt", "tea", "coffee", "margarine", "peanut butter", "cremora", "beans", "pasta", "macaroni", "spaghetti", "eggs", "kapenta", "matemba", "washing powder", "dishwashing liquid", "toilet paper", "nappies", "diapers", "groceries", "grocery", "olivine", "pure drop", "gold leaf", "red seal", "huletts", "lobels", "mazoe", "baked beans", "chicken pieces", "soya chunks", "yoghurt", "juice", "candles", "matches", "detergent", "toothpaste", "lotion", "vaseline"],
+  carparts: ["brake pads", "brake pad", "oil filter", "air filter", "fuel filter", "spark plug", "spark plugs", "clutch kit", "cv joint", "fan belt", "engine oil", "shock absorber", "shock absorbers", "wiper blades", "battery terminal", "radiator cap", "timing belt", "bearing", "bearings", "tyre", "tyres", "tire", "tires", "rims", "gearbox", "bumper", "headlight", "headlights", "spares", "spare parts", "car parts", "exhaust", "radiator", "shocks", "side mirror", "brake pads", "alternator", "car battery"],
   appliances: ["defy", "hisense", "kic", "capri", "univa", "sinotec", "telefunken", "bosch", "kenwood", "russell hobbs", "dvd player", "dvd", "decoder", "home theatre", "fridge", "fridges", "refrigerator", "freezer", "deep freezer", "stove", "microwave", "washing machine", "kettle", "tv", "television", "aircon", "air conditioner", "heater", "geyser", "iron", "blender", "toaster", "dishwasher", "gas stove", "hot plate"],
   furniture: ["ottoman", "recliner", "sofa", "couch", "lounge suite", "bed", "mattress", "table", "chair", "chairs", "wardrobe", "desk", "cabinet", "dining", "dining set", "bunk bed", "headboard", "dressing table", "bookshelf", "curtains", "carpet"],
   building: ["roof", "jojo", "jojo tank", "water tank", "door", "doors", "window", "windows", "cement", "bricks", "roofing", "roofing sheets", "tiles", "timber", "gate", "steel door", "sand", "river sand", "pit sand", "quarry", "ibr", "zinc", "paint tin", "wall tiles"],
@@ -62,6 +63,15 @@ function closeEnough(a: string, b: string): boolean {
       if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i]![j] = Math.min(d[i]![j]!, d[i - 2]![j - 2]! + 1);
     }
   return d[a.length]![b.length]! <= max;
+}
+
+/** Same word, allowing plural/singular and a small typo (used by shop price matching too). */
+export function wordsClose(a: string, b: string): boolean {
+  const x = stemWord(a);
+  const y = stemWord(b);
+  if (x === y) return true;
+  if (NOT_TYPOS.has(x) || NOT_TYPOS.has(y)) return false;
+  return closeEnough(x, y);
 }
 
 /** Everyday words that must never be "corrected" into a product (like → nike, bake → bike). */

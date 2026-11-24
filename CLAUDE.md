@@ -35,7 +35,7 @@ Scoutly is Crown Point's own WhatsApp bot for Zimbabwe. People say what they're 
 
 ## 4. Safety rules the bot must keep (non-negotiable)
 
-1. Phone numbers are only revealed **after both sides agree and both have paid** a credit. The only exception is a paid sponsored ad, where the buyer sees the advertiser's number. Typed phone numbers and emails are refused everywhere.
+1. Phone numbers are only revealed **after both sides agree and both have paid** a credit. The only exceptions are a paid sponsored ad, where the buyer sees the advertiser's number, and an **approved shop** in price comparison, whose number is public with its consent. Typed phone numbers and emails are refused everywhere.
 2. Typed links, code or JSON, illegal goods, and street-drug slang are refused. Illegal-goods attempts alert the admin.
 3. **Medicines:** anyone may search; only **admin-approved licensed pharmacies** may list or sell (`PHARMACY` application → admin checks the MCAZ licence → Approve). Prescription reminders are shown.
 4. No credits are used unless a swap actually happens. Held credits come back when someone declines, after 48 hours of no reply, when a post closes or expires, or when an item is sold.

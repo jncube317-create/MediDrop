@@ -4,11 +4,15 @@
 
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
+import ExcelJS from "exceljs";
 
 const CUSTOMER = "263771234567";
 const PROVIDER = "263782222222";
 const ADMIN = "263773333333";
 const BUYER2 = "263784444444";
+const SHOP1 = "263785555555";
+const SHOP2 = "263786666666";
+let sheetBytes = Buffer.alloc(0); // a shop's Excel price list, built in main()
 const GRAPH_PORT = 4999;
 const BOT_PORT = 4998;
 
@@ -20,11 +24,21 @@ interface Sent {
 }
 
 const outbox: Sent[] = [];
-const NAMES: Record<string, string> = { [CUSTOMER]: "CUSTOMER", [PROVIDER]: "PROVIDER", [ADMIN]: "ADMIN", [BUYER2]: "BUYER2" };
+const NAMES: Record<string, string> = { [CUSTOMER]: "CUSTOMER", [PROVIDER]: "PROVIDER", [ADMIN]: "ADMIN", [BUYER2]: "BUYER2", [SHOP1]: "SHOP1", [SHOP2]: "SHOP2" };
 
 // ---- fake Meta Graph API: records every message the bot sends
 const graph = createServer((req, res) => {
   // Photos people send: media lookup, then the download itself.
+  if (req.method === "GET" && req.url?.startsWith("/dl/sheet")) {
+    res.writeHead(200, { "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    res.end(sheetBytes);
+    return;
+  }
+  if (req.method === "GET" && /\/sheet/.test(req.url ?? "") && !req.url?.startsWith("/dl/")) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ url: `http://localhost:${GRAPH_PORT}/dl/sheet`, mime_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+    return;
+  }
   if (req.method === "GET" && req.url?.startsWith("/dl/")) {
     res.writeHead(200, { "Content-Type": "image/jpeg" });
     res.end(Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
@@ -76,13 +90,15 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let msgId = 0;
 let printed = 0;
 
-async function send(from: string, what: { text?: string; reply?: string; image?: string }, wait = 400): Promise<Sent[]> {
+async function send(from: string, what: { text?: string; reply?: string; image?: string; caption?: string; doc?: string }, wait = 400): Promise<Sent[]> {
   const who = NAMES[from] ?? from;
-  console.log(`\n▶ ${who} ${what.text !== undefined ? `types "${what.text}"` : what.image ? "sends a photo" : `taps ${what.reply}`}`);
+  console.log(`\n▶ ${who} ${what.text !== undefined ? `types "${what.text}"` : what.image ? `sends a photo${what.caption ? ` captioned "${what.caption}"` : ""}` : what.doc ? `sends the file ${what.doc}` : `taps ${what.reply}`}`);
   const message = what.text !== undefined
     ? { from, id: `sim${++msgId}`, type: "text", text: { body: what.text } }
+    : what.doc
+      ? { from, id: `sim${++msgId}`, type: "document", document: { id: "sheet1", filename: what.doc, mime_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } }
     : what.image
-      ? { from, id: `sim${++msgId}`, type: "image", image: { id: what.image } }
+      ? { from, id: `sim${++msgId}`, type: "image", image: { id: what.image, caption: what.caption } }
       : { from, id: `sim${++msgId}`, type: "interactive", interactive: { button_reply: { id: what.reply, title: "" } } };
   await fetch(`http://localhost:${BOT_PORT}/webhook`, {
     method: "POST",
@@ -168,6 +184,15 @@ async function post(phone: string, o: { text: string; kind: "item" | "service"; 
 }
 
 async function main(): Promise<void> {
+  {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Prices");
+    ws.addRow(["Item", "Price (USD)"]);
+    ws.addRow(["Olivine Cooking Oil 2 L", 3.65]);
+    ws.addRow(["Gold leaf mealie-meal 10kg", 6.9]);
+    ws.addRow(["Brake pads front Toyota Hilux", 24]);
+    sheetBytes = Buffer.from(await wb.xlsx.writeBuffer());
+  }
   await new Promise<void>((r) => graph.listen(GRAPH_PORT, r));
   const bot = spawn("node_modules/.bin/tsx", ["src/server.ts"], {
     detached: true,
@@ -468,6 +493,54 @@ async function main(): Promise<void> {
     r = await send(CUSTOMER, { reply: "buy:test1" });
     check(!has(r, CUSTOMER, /Pay \*\$0\.50\*/), "normal users can't buy the test bundle even by its ID");
     await send(CUSTOMER, { text: "MENU" });
+
+    // ---- Shops: Scoutly owns the product list and photos; shops only send prices
+    r = await send(ADMIN, { image: "prodphoto1", caption: "ADD Olivine cooking oil 2L" });
+    check(has(r, ADMIN, /PR-001 · Olivine cooking oil 2L\* \(Groceries\) is in the product list/), "admin adds a product with a photo caption");
+    r = await send(ADMIN, { text: "ADD Gold Leaf mealie meal 10kg" });
+    check(has(r, ADMIN, /Added \*PR-002 · Gold Leaf mealie meal 10kg\* \(Groceries\)/), "admin adds a product by text");
+    r = await send(ADMIN, { text: "ADD Brake pads front Toyota Hilux | carparts" });
+    check(has(r, ADMIN, /PR-003 · Brake pads front Toyota Hilux\* \(Car parts\)/), "admin adds a spare part");
+    r = await send(ADMIN, { image: "prodphoto2", caption: "PHOTO PR-002" });
+    check(has(r, ADMIN, /New photo for \*PR-002/), "admin sets a product photo later");
+    r = await send(ADMIN, { text: "ADD Olivine cooking oil 2L" });
+    check(has(r, ADMIN, /PR-001/) && !has(r, ADMIN, /PR-004/), "adding the same product twice doesn't duplicate it");
+
+    await onboard(SHOP1, "Mai Tino");
+    r = await send(SHOP1, { text: "SHOP" });
+    check(has(r, SHOP1, /List your shop's prices[\s\S]*WhatsApp number[\s\S]*we supply the product photos/), "SHOP explains the deal: prices only, number shown");
+    r = await send(SHOP1, { text: "Tino's Superette, 4 Main Street Nkulumane, open 7am to 8pm daily" });
+    check(has(r, SHOP1, /check your shop/) && has(r, ADMIN, /Shop application/), "shop application goes to admin");
+    r = await send(ADMIN, { reply: option(r, ADMIN, /^shop:ok:\d+/) });
+    check(has(r, SHOP1, /Tino's Superette\* is approved[\s\S]*How to send prices/), "approved shop is told how to send prices");
+    r = await send(SHOP1, { text: "Olivine cooking oil 2L 3.80\nGold leaf mealie meal 10kg - $7.20\nMazoe orange 2L 4.50" });
+    check(has(r, SHOP1, /2 prices updated[\s\S]*\$3\.80[\s\S]*Not in our product list yet[\s\S]*Mazoe orange 2L/), "typed price list updates prices and lists unknown items");
+    check(has(r, ADMIN, /Tino's Superette\* sent prices for products not in the list[\s\S]*Mazoe/), "admin is told which products to add");
+
+    await onboard(SHOP2, "Baba Spares");
+    await send(SHOP2, { text: "SHOP" });
+    r = await send(SHOP2, { text: "Spares Hub, 22 Fort Street Bulawayo CBD, Mon-Sat 8am-5pm" });
+    await send(ADMIN, { text: "SHOP 0786666666" });
+    r = await send(SHOP2, { doc: "prices.xlsx" });
+    check(has(r, SHOP2, /3 prices updated[\s\S]*Brake pads[\s\S]*\$24\.00/), "shop's Excel price list is read");
+    r = await send(BUYER2, { doc: "random.pdf" });
+    check(has(r, BUYER2, /only used for shop price lists/), "non-shops sending files get a polite note");
+
+    r = await send(CUSTOMER, { text: "cheapest cooking oil 2L" });
+    check(has(r, CUSTOMER, /Olivine cooking oil 2L[\s\S]*🥇 \*\$3\.65\* · Spares Hub[\s\S]*2\. \*\$3\.80\* · Tino's Superette[\s\S]*saves you \*\$0\.15\*/), "shopper sees shop prices cheapest first");
+    check(has(r, CUSTOMER, /cmp:shops:PR-001/) && !has(r, CUSTOMER, /0786666666|78 666 6666/), "numbers aren't dumped in the comparison itself");
+    r = await send(CUSTOMER, { reply: "cmp:shops:PR-001" });
+    r = await send(CUSTOMER, { reply: option(r, CUSTOMER, /^cmp:shop:263786666666/) });
+    check(has(r, CUSTOMER, /Spares Hub[\s\S]*22 Fort Street[\s\S]*\+263 78 666 6666[\s\S]*\/c\//), "shop details (address, number, chat link) are free");
+    r = await send(CUSTOMER, { text: "brake pads hilux" });
+    check(has(r, CUSTOMER, /Brake pads front Toyota Hilux[\s\S]*\$24\.00\* · Spares Hub/), "spare parts compare the same way");
+    await send(CUSTOMER, { text: "MENU" });
+    r = await send(CUSTOMER, { text: "toyota hilux 2012" });
+    check(!has(r, CUSTOMER, /Brake pads/), "a car search doesn't show spare-part prices");
+    await send(CUSTOMER, { text: "MENU" });
+    r = await send(ADMIN, { text: "STATS" });
+    check(has(r, ADMIN, /Products: 3 \(0 without a photo\)|Products: 3 \(1 without a photo\)/) && has(r, ADMIN, /Shops: 2/), "STATS counts products and shops");
+    await send(ADMIN, { text: "MENU" });
 
     // ---- How it works explains credits and number-sharing consent
     r = await send(CUSTOMER, { reply: "menu:help" });

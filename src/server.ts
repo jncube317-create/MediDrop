@@ -51,7 +51,8 @@ interface WaMessage {
   text?: { body?: string };
   interactive?: { button_reply?: { id: string }; list_reply?: { id: string } };
   button?: { payload?: string };
-  image?: { id?: string };
+  image?: { id?: string; caption?: string };
+  document?: { id?: string; filename?: string; mime_type?: string; caption?: string };
 }
 
 function toIncoming(msg: WaMessage): Incoming {
@@ -59,7 +60,9 @@ function toIncoming(msg: WaMessage): Incoming {
   const replyId = msg.interactive?.button_reply?.id ?? msg.interactive?.list_reply?.id;
   if (msg.type === "interactive" && replyId) return { from: msg.from, kind: "reply", id: replyId };
   if (msg.type === "button" && msg.button?.payload) return { from: msg.from, kind: "reply", id: msg.button.payload };
-  if (msg.type === "image" && msg.image?.id) return { from: msg.from, kind: "image", mediaId: msg.image.id };
+  if (msg.type === "image" && msg.image?.id) return { from: msg.from, kind: "image", mediaId: msg.image.id, caption: msg.image.caption ?? "" };
+  if (msg.type === "document" && msg.document?.id)
+    return { from: msg.from, kind: "document", mediaId: msg.document.id, filename: msg.document.filename ?? "", mime: msg.document.mime_type ?? "" };
   return { from: msg.from, kind: "other" };
 }
 

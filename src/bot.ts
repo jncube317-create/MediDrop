@@ -53,15 +53,18 @@ import { formatUsd } from "./money";
 import { checkPayment, startPayment } from "./pay";
 import { formatLocalNumber, networkMatches, normalizeZwMobile, toLocalNumber } from "./paystatus";
 import { track } from "./analytics";
-import { demoPhoto, savePhoto } from "./media";
+import { demoPhoto, savePhoto, downloadMedia } from "./media";
 import { dbEnabled, loadTable, upsert, type CreditRow, type Row } from "./store";
 import { understand, subjectOf } from "./parse";
+import { type Product, searchProducts, livePrices, ageLabel, parsePriceLine, applyPrices, productCategory, bestProduct } from "./catalog";
+import { readPriceSheet } from "./sheet";
 import type { CarouselCard } from "./limits";
 
 export type Incoming =
   | { from: string; kind: "text"; text: string }
   | { from: string; kind: "reply"; id: string }
-  | { from: string; kind: "image"; mediaId: string }
+  | { from: string; kind: "image"; mediaId: string; caption?: string }
+  | { from: string; kind: "document"; mediaId: string; filename: string; mime: string }
   | { from: string; kind: "other" };
 
 type Mode = "find" | "sell" | "ad";
@@ -73,7 +76,7 @@ type Step =
   | "CAT_KIND" | "CAT_PICK"
   | "FIND_TEXT" | "FIND_BUDGET" | "FIND_WHEN" | "FIND_DATE" | "FIND_WHERE" | "FIND_CONFIRM"
   | "SELL_TITLE" | "SELL_MILEAGE" | "SELL_DESC" | "SELL_COND" | "SELL_PRICE" | "SELL_PHOTOS" | "SELL_COVER" | "SELL_CONFIRM"
-  | "QUOTE_TEXT" | "PHARM_DETAILS"
+  | "QUOTE_TEXT" | "PHARM_DETAILS" | "SHOP_DETAILS" | "SHOP_PRICES"
   | "AD_TEXT" | "AD_PHOTO" | "AD_WHERE" | "AD_CONFIRM"
   | "BUY_PAYER" | "BUY_OTHER_NUMBER" | "BUY_WAIT";
 
@@ -117,6 +120,10 @@ interface User {
   verified: boolean;
   pharmacy?: { details: string; approvedAt: number } | null; // licensed pharmacy, approved by admin
   pharmacyApplication?: string | null;
+  shop?: { name: string; details: string; approvedAt: number } | null; // approved shop: sends prices
+  shopApplication?: string | null;
+  shopReminded?: string; // week of the last "update your prices" reminder
+  lastIn?: number; // when they last messaged us (WhatsApp only allows free-form replies for 24h)
   lastWeekly?: string; // week the free top-up was last checked
   step: Step;
   draft: Draft;
@@ -201,6 +208,7 @@ interface Purchase {
 const users = new Map<string, User>();
 const needs = new Map<string, Need>();
 const listings = new Map<string, Listing>();
+const products = new Map<string, Product>(); // Scoutly's product list for shop price comparison
 const leads = new Map<string, Lead>();
 const ads = new Map<string, Ad>();
 const purchases = new Map<string, Purchase>();
@@ -210,6 +218,7 @@ let listingSeq = 500;
 let leadSeq = 0;
 let adSeq = 10;
 let purchaseSeq = 100;
+let productSeq = 0;
 
 const DRAFT_TIMEOUT_MS = 30 * 60 * 1000;
 const NEED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -250,7 +259,7 @@ function seedSamples(): void {
 }
 // ---------------------------------------------------------------- saving to Supabase
 
-type Table = "users" | "needs" | "listings" | "leads" | "ads" | "purchases";
+type Table = "users" | "needs" | "listings" | "leads" | "ads" | "purchases" | "products";
 const TABLES: { name: Table; map: Map<string, object>; skip: (v: any) => boolean }[] = [
   { name: "users", map: users, skip: (u: User) => isSample(u.phone) },
   { name: "needs", map: needs, skip: (n: Need) => isSample(n.owner) },
@@ -258,13 +267,14 @@ const TABLES: { name: Table; map: Map<string, object>; skip: (v: any) => boolean
   { name: "leads", map: leads, skip: (l: Lead) => isSample(l.provider) || isSample(l.customer) },
   { name: "ads", map: ads, skip: (a: Ad) => isSample(a.owner) },
   { name: "purchases", map: purchases, skip: () => false },
+  { name: "products", map: products, skip: () => false },
 ];
 const savedJson = new Map<string, string>();
 let savedEntries = 0;
 let savedSeq = "";
 let flushing = false;
 
-const seqs = () => ({ needSeq, listingSeq, leadSeq, adSeq, purchaseSeq });
+const seqs = () => ({ needSeq, listingSeq, leadSeq, adSeq, purchaseSeq, productSeq });
 const maxNum = (ids: Iterable<string>) => Math.max(0, ...[...ids].map((id) => Number(id.replace(/\D/g, "")) || 0));
 
 /** Loads saved data (if Supabase is set), then adds the demo samples. Call once before serving. */
@@ -289,6 +299,7 @@ export async function initState(): Promise<void> {
     leadSeq = Math.max(leadSeq, saved.leadSeq ?? 0, maxNum(leads.keys()));
     adSeq = Math.max(adSeq, saved.adSeq ?? 0, maxNum(ads.keys()));
     purchaseSeq = Math.max(purchaseSeq, saved.purchaseSeq ?? 0, maxNum(purchases.keys()));
+    productSeq = Math.max(productSeq, saved.productSeq ?? 0, maxNum(products.keys()));
     console.log(`[DB] Loaded ${users.size} users, ${needs.size} posts, ${listings.size} listings, ${leads.size} leads, ${savedEntries} credit entries.`);
     setInterval(() => void flushState(), 2000).unref();
   } else {
@@ -369,7 +380,7 @@ function shortChat(lead: Lead, full: string): string {
 export function resolveChat(code: string): string | null {
   if (!/^[A-Za-z0-9]{10}$/.test(code)) return null;
   for (const l of leads.values()) if (l.chat?.[code]) return l.chat[code] ?? null;
-  return null;
+  return shopChats.get(code) ?? null;
 }
 
 /** Hi, hie, hey, hello, helo, howzit, good morning, sawubona, mhoro… all mean "show me the menu". */
@@ -480,7 +491,13 @@ async function refusedAsBanned(u: User, text: string): Promise<boolean> {
 // ---------------------------------------------------------------- entry point
 
 export async function handleIncoming(m: Incoming): Promise<void> {
-  if (isAdmin(m.from) && /^(stats|lookup|grant|verify|ads|pharmacy\s+\+?\d|unpharmacy\s+\+?\d)/i.test(textOf(m))) return adminCommand(m.from, textOf(m));
+  { const me = users.get(m.from); if (me) me.lastIn = Date.now(); }
+  if (isAdmin(m.from) && /^(stats|lookup|grant|verify|ads|products|add\s+\S|pharmacy\s+\+?\d|unpharmacy\s+\+?\d|shop\s+\+?\d|unshop\s+\+?\d)/i.test(textOf(m))) return adminCommand(m.from, textOf(m));
+  if (isAdmin(m.from) && m.kind === "image" && /^\s*(add|photo)\b/i.test(m.caption ?? "")) return adminProductPhoto(m.from, m.mediaId, m.caption ?? "");
+  if (isAdmin(m.from) && m.kind === "reply" && /^shop:(ok|no):\d+$/.test(m.id)) {
+    const [, verdict, phone] = m.id.split(":");
+    return reviewShop(m.from, phone ?? "", verdict === "ok");
+  }
   if (isAdmin(m.from) && m.kind === "reply" && /^pharm:(ok|no):\d+$/.test(m.id)) {
     const [, verdict, phone] = m.id.split(":");
     return reviewPharmacy(m.from, phone ?? "", verdict === "ok");
@@ -613,6 +630,14 @@ async function conversation(m: Incoming): Promise<void> {
   if (/^credits?$/i.test(text)) return showCredits(u);
   if (/^stop$/i.test(text)) return stopAlerts(u);
   if (/^pharmacy$/i.test(text)) return askPharmacyDetails(u);
+  if (/^shop$/i.test(text)) return askShopDetails(u);
+  if (/^prices?$/i.test(text) && u.shop) return askShopPrices(u);
+  // An approved shop pasting several "product price" lines = a price update, wherever they are.
+  if (u.shop && m.kind === "text" && text.split(/\n/).filter((l) => parsePriceLine(l)).length >= 2) return updateShopPrices(u, text.split(/\n/));
+  if (m.kind === "document") {
+    if (u.shop) return updateShopPricesFromFile(u, m.mediaId, m.filename, m.mime);
+    return void (await wa.sendText(to, "Thanks! Files are only used for shop price lists. Type SHOP if you'd like to list your shop's prices."));
+  }
 
   // ---- photos
   if (m.kind === "image") {
@@ -667,6 +692,10 @@ async function conversation(m: Incoming): Promise<void> {
 
   if (id.startsWith("buy:")) return startBuy(u, id.slice(4));
   if (id.startsWith("edit:menu:")) return editMenu(u, id.slice(10));
+  if (id.startsWith("cmp:p:")) return showProductPrices(u, id.slice(6));
+  if (id.startsWith("cmp:shops:")) return listProductShops(u, id.slice(10));
+  if (id.startsWith("cmp:shop:")) return showShop(u, id.slice(9));
+  if (id === "cmp:post") return u.draft.text ? (u.draft.category ? createNeed(u) : askAnyCategory(u)) : showMenu(u, "Type what you're looking for.");
   {
     const m = id.match(/^edit:(budget|cat|any|here):(N-\d+)$/);
     if (m) return editSearch(u, m[2]!, m[1]!);
@@ -715,6 +744,24 @@ async function conversation(m: Incoming): Promise<void> {
       return didntGetThat(u);
     }
 
+    // ---- shops
+    case "SHOP_DETAILS": {
+      if (text.length < 20) return void (await wa.sendText(to, "Please send all the details in one message: shop name, address (street, suburb, town) and opening hours."));
+      u.shopApplication = clean(text, 400);
+      u.step = "MENU";
+      track("shop_applied", to, {});
+      await wa.sendText(to, "Thank you 🙏 We'll check your shop and reply here, usually within a day.");
+      if (env.ADMIN_PHONE)
+        await wa.sendButtons(env.ADMIN_PHONE, `🏪 *Shop application*\nFrom: ${nameOf(to)} ${prettyPhone(to)}\n\n"${u.shopApplication}"`, [
+          { id: `shop:ok:${to}`, title: "Approve" },
+          { id: `shop:no:${to}`, title: "Reject" },
+        ]);
+      return;
+    }
+    case "SHOP_PRICES": {
+      return updateShopPrices(u, text.split(/\n/));
+    }
+
     // ---- pharmacy application
     case "PHARM_DETAILS": {
       if (text.length < 25) return void (await wa.sendText(to, "Please send all the details in one message: pharmacy name, physical address, MCAZ premises licence number, and the responsible pharmacist's name."));
@@ -761,7 +808,7 @@ async function conversation(m: Incoming): Promise<void> {
     }
 
     case "CAT_PICK": {
-      if (id === "cat:more") return askAnyCategory(u, true);
+      if (id === "cat:more" || id.startsWith("cat:more:")) return askAnyCategory(u, true, Number(id.split(":")[2] ?? 0) || 0);
       const cat = id.startsWith("cat:") ? getCategory(id.slice(4)) : undefined;
       if (!cat) return didntGetThat(u);
       if (cat.pharmacyOnly && (u.draft.mode === "sell" || u.draft.mode === "ad") && !u.pharmacy) {
@@ -1136,6 +1183,216 @@ async function reviewPharmacy(admin: string, phone: string, approve: boolean): P
   p.pharmacyApplication = null;
 }
 
+// ---------------------------------------------------------------- shops and price comparison
+
+function textOf_rest(t: string): string {
+  return t.replace(/^\s*\S+\s*/, "").trim();
+}
+
+/** "Olivine cooking oil 2L" or "Brake pads front Hilux | carparts". Same name again = same product. */
+function addProduct(raw: string, photo: string | null): Product | null {
+  const [namePart, catPart] = raw.split("|").map((x) => x.trim());
+  const name = clean(namePart ?? "", 80);
+  if (name.length < 3) return null;
+  const existing = bestProduct(name, products.values(), 0.99);
+  if (existing && existing.name.toLowerCase() === name.toLowerCase()) {
+    if (photo) existing.photo = photo;
+    return existing;
+  }
+  const cat = catPart && getCategory(catPart.toLowerCase()) ? catPart.toLowerCase() : productCategory(name);
+  const p: Product = { id: `PR-${String(++productSeq).padStart(3, "0")}`, name, category: cat, photo, prices: {}, createdAt: Date.now() };
+  products.set(p.id, p);
+  return p;
+}
+
+async function adminProductPhoto(admin: string, mediaId: string, caption: string): Promise<void> {
+  const link = await savePhoto(mediaId);
+  if (!link) return void (await wa.sendText(admin, "That photo didn't come through. Please send it again."));
+  const m = caption.match(/^\s*photo\s+(PR-\d+)/i);
+  if (m) {
+    const p = products.get(m[1]!.toUpperCase());
+    if (!p) return void (await wa.sendText(admin, `No product ${m[1]}. Type PRODUCTS to see the list.`));
+    p.photo = link;
+    return void (await wa.sendText(admin, `✅ New photo for *${p.id} · ${p.name}*.`));
+  }
+  const p = addProduct(caption.replace(/^\s*add\s*/i, ""), link);
+  await wa.sendText(admin, p ? `✅ *${p.id} · ${p.name}* (${catName(p.category)}) is in the product list with your photo. Shops can now send prices for it.` : "Use the caption: ADD Olivine cooking oil 2L");
+}
+
+async function askShopDetails(u: User): Promise<void> {
+  if (u.shop) return askShopPrices(u);
+  u.draft = {};
+  u.step = "SHOP_DETAILS";
+  await prompt(u, () =>
+    wa.sendText(
+      u.phone,
+      "🏪 *List your shop's prices on Scoutly*\n\nShoppers comparing prices will see your shop, address and WhatsApp number. You only send prices; we supply the product photos.\n\nSend in *one message*:\n1. Shop name\n2. Address (street, suburb, town)\n3. Opening hours",
+    ),
+  );
+}
+
+async function reviewShop(admin: string, phone: string, approve: boolean): Promise<void> {
+  const p = users.get(phone);
+  if (!p) return void (await wa.sendText(admin, "That person hasn't messaged the bot."));
+  if (approve) {
+    const details = p.shopApplication ?? p.shop?.details ?? "";
+    const name = clean(details.split(/[\n,]/)[0] ?? p.profile?.name ?? p.name ?? "Shop", 40);
+    p.shop = { name, details, approvedAt: Date.now() };
+    track("shop_approved", phone, {});
+    await wa.sendText(admin, `✅ ${name} is now a shop.`);
+    await tell(phone, `✅ *${name}* is approved as a shop on ${env.APP_NAME}.\n\n${PRICE_HELP}`);
+  } else {
+    await wa.sendText(admin, `Rejected ${nameOf(phone)}'s shop application.`);
+    await tell(phone, "Sorry, we couldn't approve your shop yet. Reply SHOP to apply again with your shop name, address and hours.");
+  }
+  p.shopApplication = null;
+}
+
+const PRICE_HELP =
+  "📋 *How to send prices*\nType one product per line, then the price:\n_Olivine cooking oil 2L 3.80_\n_Gold Leaf mealie meal 10kg 7.50_\n\nOr send your price list as a spreadsheet (Excel or CSV): product in one column, price in the next.\n\nSend new prices any time. We'll remind you every Monday. Type PRICES to see this again.";
+
+async function askShopPrices(u: User): Promise<void> {
+  u.step = "SHOP_PRICES";
+  await prompt(u, () => wa.sendText(u.phone, PRICE_HELP));
+}
+
+async function updateShopPrices(u: User, lines: string[]): Promise<void> {
+  if (!u.shop) return askShopDetails(u);
+  const rows = lines.map((l) => l.trim()).filter(Boolean).map((l) => parsePriceLine(l));
+  const good = rows.filter((r): r is { name: string; cents: number } => r !== null);
+  if (!good.length) return void (await wa.sendText(u.phone, `I couldn't find any prices there.\n\n${PRICE_HELP}`));
+  return reportPrices(u, applyPrices(u.phone, good, products.values()), rows.length - good.length);
+}
+
+async function updateShopPricesFromFile(u: User, mediaId: string, filename: string, mime: string): Promise<void> {
+  if (!/\.(xlsx|csv)$/i.test(filename) && !/spreadsheet|csv|excel/.test(mime))
+    return void (await wa.sendText(u.phone, "Please send an Excel (.xlsx) or CSV file, or type your prices: one product per line."));
+  const file = await downloadMedia(mediaId);
+  if (!file) return void (await wa.sendText(u.phone, "Sorry, that file didn't come through. Please send it again."));
+  let rows: { name: string; cents: number }[] = [];
+  try {
+    rows = await readPriceSheet(file.bytes, filename, file.mime || mime);
+  } catch (err) {
+    console.error("[SHEET]", err instanceof Error ? err.message : err);
+  }
+  if (!rows.length) return void (await wa.sendText(u.phone, "I couldn't read any prices from that file. Put the product name in one column and the price in the next, then send it again."));
+  return reportPrices(u, applyPrices(u.phone, rows, products.values()), 0);
+}
+
+async function reportPrices(u: User, r: ReturnType<typeof applyPrices>, unreadable: number): Promise<void> {
+  u.step = "MENU";
+  track("prices_updated", u.phone, { updated: r.updated.length, unknown: r.unknown.length });
+  const lines = r.updated.slice(0, 12).map((x) => `• ${fit(x.product.name, 40)}: ${formatUsd(x.cents)}`);
+  await wa.sendText(
+    u.phone,
+    [
+      `✅ *${r.updated.length} price${r.updated.length === 1 ? "" : "s"} updated* for ${u.shop?.name ?? "your shop"}.`,
+      lines.join("\n") + (r.updated.length > 12 ? `\n…and ${r.updated.length - 12} more` : ""),
+      r.unknown.length ? `❓ *Not in our product list yet* (sent to Scoutly to add, then send them again):\n${r.unknown.slice(0, 10).map((x) => `• ${x}`).join("\n")}` : "",
+      unreadable ? `${unreadable} line${unreadable === 1 ? "" : "s"} had no price and ${unreadable === 1 ? "was" : "were"} skipped.` : "",
+      "_Type MENU any time._",
+    ].filter(Boolean).join("\n\n"),
+  );
+  if (r.unknown.length && env.ADMIN_PHONE)
+    await wa.sendText(env.ADMIN_PHONE, `🛒 *${u.shop?.name ?? nameOf(u.phone)}* sent prices for products not in the list:\n${r.unknown.slice(0, 15).map((x) => `• ${x}`).join("\n")}\n\nAdd them with a photo and the caption *ADD <name>*.`);
+}
+
+function productImage(p: Product): string {
+  return p.photo ?? demoPhoto(`ph-${getCategory(p.category) ? p.category : "other"}.jpg`);
+}
+
+function shopLine(phone: string, cents: number, at: number, stale: boolean): string {
+  const s = users.get(phone)?.shop;
+  return `*${formatUsd(cents)}* · ${fit(s?.name ?? nameOf(phone), 30)} · ${ageLabel(at)}${stale ? " ⚠️" : ""}`;
+}
+
+/** Shop price comparison: one product shows its prices; several show as cards to pick from. */
+async function showComparison(u: User, hits: Product[]): Promise<void> {
+  track("prices_compared", u.phone, { products: hits.length });
+  if (hits.length === 1) return showProductPrices(u, hits[0]!.id);
+  const cards: CarouselCard[] = hits.slice(0, 9).map((p) => {
+    const live = livePrices(p);
+    const best = live[0]!;
+    return {
+      imageUrl: productImage(p),
+      text: `${fit(p.name, 44)}\nFrom ${formatUsd(best.cents)} at ${fit(users.get(best.shop)?.shop?.name ?? "a shop", 28)}\n${live.length} shop${live.length === 1 ? "" : "s"} · ${ageLabel(best.at)}`,
+      buttons: [{ id: `cmp:p:${p.id}`, title: "Compare prices" }],
+    };
+  });
+  await sendCards(u.phone, `💲 ${hits.length} products for *${fit(subjectOf(u.draft.text ?? ""), 40)}*. Swipe, then tap *Compare prices* 👉`, cards, hits.map((p) => ({ id: `cmp:p:${p.id}`, title: fit(p.name, 24), description: `From ${formatUsd(livePrices(p)[0]!.cents)} · ${livePrices(p).length} shops` })));
+  await wa.sendButtons(u.phone, "Not what you need? We can also ask sellers for you.", [
+    { id: "cmp:post", title: "🔎 Ask sellers too" },
+    { id: "menu:main", title: "Main menu" },
+  ]);
+}
+
+async function showProductPrices(u: User, productId: string): Promise<void> {
+  const p = products.get(productId);
+  if (!p) return showMenu(u, "That product isn't listed any more. Type what you're looking for.");
+  const live = livePrices(p);
+  if (!live.length) return showMenu(u, `No shop has sent a price for ${p.name} in the last 30 days. Type what you're looking for to ask sellers.`);
+  const top = live.slice(0, 6).map((x, i) => `${i === 0 ? "🥇" : `${i + 1}.`} ${shopLine(x.shop, x.cents, x.at, x.stale)}`);
+  const saving = live.length > 1 ? `\n\n💡 Cheapest saves you *${formatUsd(live[live.length - 1]!.cents - live[0]!.cents)}* compared with the most expensive.` : "";
+  await wa.sendButtons(
+    u.phone,
+    fit(`*${p.name}*\n\n${top.join("\n")}${saving}\n\n${live.some((x) => x.stale) ? "⚠️ = price older than 2 weeks. " : ""}Prices come from the shops; confirm in store.`, 1000),
+    [
+      { id: `cmp:shops:${p.id}`, title: "🏪 Shop details" },
+      { id: "cmp:post", title: "🔎 Ask sellers too" },
+      { id: "menu:main", title: "Main menu" },
+    ],
+    { imageUrl: productImage(p) },
+  );
+}
+
+async function listProductShops(u: User, productId: string): Promise<void> {
+  const p = products.get(productId);
+  if (!p) return showMenu(u, "That product isn't listed any more.");
+  await wa.sendList(
+    u.phone,
+    `Shops with *${fit(p.name, 50)}*, cheapest first. Tap one for the address, hours and number.`,
+    "Shops",
+    livePrices(p).slice(0, 10).map((x) => ({ id: `cmp:shop:${x.shop}`, title: fit(users.get(x.shop)?.shop?.name ?? nameOf(x.shop), 24), description: fit(`${formatUsd(x.cents)} · ${ageLabel(x.at)}`, 72) })),
+    "Shops",
+  );
+}
+
+async function showShop(u: User, phone: string): Promise<void> {
+  const s = users.get(phone)?.shop;
+  if (!s) return showMenu(u, "That shop isn't listed any more.");
+  track("shop_viewed", u.phone, {});
+  await wa.sendText(
+    u.phone,
+    `🏪 *${s.name}*\n${s.details}\n\n📞 ${prettyPhone(phone)}\n💬 ${shortChatFor(phone, `Hi ${s.name} 👋 I saw your prices on Scoutly.`)}\n\nPrices come from the shop; confirm in store.\n\n_Type MENU any time._`,
+  );
+}
+
+/** Short chat link to a shop (stored on a lightweight record so /c/<code> works like swap links). */
+const shopChats = new Map<string, string>();
+function shortChatFor(phone: string, hello: string): string {
+  const full = chatLink(phone, hello);
+  if (!env.PUBLIC_URL) return full;
+  const code = randomBytes(8).toString("base64url").replace(/[-_]/g, "x").slice(0, 10);
+  shopChats.set(code, full);
+  return `${env.PUBLIC_URL}/c/${code}`;
+}
+
+/** Carousel first; single picture cards if Meta refuses; a plain list as the last resort. */
+async function sendCards(phone: string, intro: string, cards: CarouselCard[], rows: { id: string; title: string; description?: string }[]): Promise<void> {
+  let sent = cards.length >= 2 ? await wa.sendCarousel(phone, intro, cards) : false;
+  if (!sent) {
+    await wa.sendText(phone, intro.replace(/ Swipe[^.]*👉/, ""));
+    sent = true;
+    for (const c of cards.slice(0, 5)) {
+      if (!(await wa.sendButtons(phone, c.text, c.buttons, { imageUrl: c.imageUrl }))) {
+        sent = false;
+        break;
+      }
+    }
+  }
+  if (!sent) await wa.sendList(phone, "Tap one:", "See all", rows.slice(0, 10), "Results");
+}
+
 async function showMenu(u: User, greeting: string): Promise<void> {
   u.step = "MENU";
   u.draft = {};
@@ -1237,6 +1494,15 @@ async function quickFind(u: User, raw: string): Promise<void> {
   track("search_understood", u.phone, { category: got.category ?? keepCategory ?? "unknown", budget: got.budgetCents !== undefined, when: got.when ?? "none" });
   u.draft.understood = Boolean(got.category);
   if (medicineWord(text)) return findMedicine(u);
+  // Only compare shop prices when the search is about that kind of product ("toyota hilux" is a car, not brake pads).
+  const hits = searchProducts(text, products.values()).filter((p) => livePrices(p).length > 0 && (!got.category || got.category === p.category));
+  if (hits.length) {
+    if (got.category && getCategory(got.category)) {
+      u.draft.category = got.category;
+      u.draft.kind = getCategory(got.category)!.kind;
+    }
+    return showComparison(u, hits);
+  }
   const cat = getCategory(keepCategory ?? got.category ?? "");
   if (!cat) return askAnyCategory(u);
   u.draft.category = cat.key;
@@ -1250,12 +1516,21 @@ async function quickFind(u: User, raw: string): Promise<void> {
  */
 const POPULAR = ["cars", "property", "appliances", "phones", "furniture", "building", "painting", "plumbing", "beauty"];
 
-async function askAnyCategory(u: User, more = false): Promise<void> {
+async function askAnyCategory(u: User, more = false, page = 0): Promise<void> {
   u.step = "CAT_PICK";
   u.draft.mode = u.draft.mode ?? "find";
-  const cats = more ? CATEGORIES.filter((c) => !POPULAR.includes(c.key)) : POPULAR.map((k) => getCategory(k)!).filter(Boolean);
-  const rows = cats.map((c) => ({ id: `cat:${c.key}`, title: c.name, description: fit(`e.g. ${c.example}`, 72) }));
-  if (!more) rows.push({ id: "cat:more", title: "➕ More categories", description: "Car parts, clothes, mechanics, events, printing, moving…" });
+  const toRow = (c: (typeof CATEGORIES)[number]) => ({ id: `cat:${c.key}`, title: c.name, description: fit(`e.g. ${c.example}`, 72) });
+  let rows: { id: string; title: string; description: string }[];
+  if (!more) {
+    rows = POPULAR.map((k) => getCategory(k)).filter((c): c is (typeof CATEGORIES)[number] => Boolean(c)).slice(0, 9).map(toRow);
+    rows.push({ id: "cat:more:0", title: "➕ More categories", description: "Groceries, car parts, clothes, mechanics, events, moving…" });
+  } else {
+    const rest = CATEGORIES.filter((c) => !POPULAR.includes(c.key));
+    const pages = Math.max(1, Math.ceil(rest.length / 9));
+    const pg = Math.min(Math.max(0, page), pages - 1);
+    rows = rest.slice(pg * 9, pg * 9 + 9).map(toRow);
+    if (pages > 1) rows.push({ id: `cat:more:${(pg + 1) % pages}`, title: pg + 1 < pages ? "➕ Even more" : "↩️ Back to start", description: `Page ${pg + 1} of ${pages}` });
+  }
   const what = u.draft.text ? fit(subjectOf(u.draft.text), 60) : "";
   await prompt(u, () =>
     wa.sendList(u.phone, what ? `Which category is *${what}* in?` : "Which category?", "Categories", rows.slice(0, 10), more ? "More categories" : "Categories"),
@@ -2482,6 +2757,24 @@ async function adminCommand(to: string, text: string): Promise<void> {
       await tell(phone, `✅ You're now a verified seller on ${env.APP_NAME}. Your listings show the ✅ badge.`);
       return;
     }
+    case "products": {
+      const list = [...products.values()];
+      const lines = list.slice(-20).map((p) => `${p.id} · ${p.name}${p.photo ? "" : " (no photo)"} · ${livePrices(p).length} shops`);
+      return void (await wa.sendText(to, `🛒 *Products* (${list.length})\n${lines.join("\n") || "none yet"}\n\nAdd: send a photo with the caption *ADD Olivine cooking oil 2L* (or type it without a photo).\nChange a photo: send a photo with the caption *PHOTO PR-001*.\nSpare parts: *ADD Brake pads front Toyota Hilux 2005-2015 | carparts*`));
+    }
+    case "add": {
+      const p = addProduct(textOf_rest(text), null);
+      return void (await wa.sendText(to, p ? `✅ Added *${p.id} · ${p.name}* (${catName(p.category)}). Send a photo with the caption *PHOTO ${p.id}* to add its picture.` : "Use: ADD Olivine cooking oil 2L"));
+    }
+    case "shop":
+    case "unshop": {
+      const phone = toIntl(arg1);
+      if (!phone || !users.get(phone)) return void (await wa.sendText(to, "Use: SHOP 0771234567 to approve, UNSHOP 0771234567 to remove."));
+      if (cmd.toLowerCase() === "shop") return reviewShop(to, phone, true);
+      users.get(phone)!.shop = null;
+      for (const p of products.values()) delete p.prices[phone];
+      return void (await wa.sendText(to, `Removed ${nameOf(phone)}'s shop status and their prices.`));
+    }
     case "pharmacy":
     case "unpharmacy": {
       const phone = toIntl(arg1);
@@ -2539,7 +2832,7 @@ async function sendStats(to: string): Promise<void> {
   const topText = [...top.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${catName(k)} (${v})`).join(", ");
   await wa.sendText(
     to,
-    `📊 *${env.APP_NAME} today*\n👥 People: ${[...users.keys()].filter((p) => !isSample(p)).length}\n🔎 Posts: ${needs.size} (${[...needs.values()].filter((n) => n.status === "OPEN").length} open)\n🔥 Top searches: ${topText || "none yet"}\n❓ Didn't understand: ${[...needs.values()].filter((n) => n.understood === false).slice(-6).map((n) => `"${fit(n.text, 30)}" → ${catName(n.category)}`).join(", ") || "none"}\n🏷️ Real listings: ${real.filter((l) => l.active && !l.sold).length} live, ${real.filter((l) => l.sold).length} sold\n📬 Leads: ${all.length} · 🙋 Waiting: ${count("OFFERED") + count("INTERESTED")} · 🤝 Swapped: ${count("CONNECTED")}\n📣 Ads: ${[...ads.values()].filter((a) => a.status === "LIVE").length} live, ${[...ads.values()].filter((a) => a.status === "PENDING").length} waiting, ${[...ads.values()].reduce((s, a) => s + a.taps, 0)} taps\n💳 Credits sold: ${paid.reduce((s, p) => s + p.credits, 0)} (${formatUsd(paid.reduce((s, p) => s + p.cents, 0))})\n\nAdmin commands: STATS · LOOKUP N-1001 · GRANT 0771234567 5 · VERIFY 0771234567 · ADS · PHARMACY 0771234567\n(\"Didn't understand\" shows words to add to the search list.)`,
+    `📊 *${env.APP_NAME} today*\n👥 People: ${[...users.keys()].filter((p) => !isSample(p)).length}\n🔎 Posts: ${needs.size} (${[...needs.values()].filter((n) => n.status === "OPEN").length} open)\n🔥 Top searches: ${topText || "none yet"}\n❓ Didn't understand: ${[...needs.values()].filter((n) => n.understood === false).slice(-6).map((n) => `"${fit(n.text, 30)}" → ${catName(n.category)}`).join(", ") || "none"}\n🏷️ Real listings: ${real.filter((l) => l.active && !l.sold).length} live, ${real.filter((l) => l.sold).length} sold\n📬 Leads: ${all.length} · 🙋 Waiting: ${count("OFFERED") + count("INTERESTED")} · 🤝 Swapped: ${count("CONNECTED")}\n📣 Ads: ${[...ads.values()].filter((a) => a.status === "LIVE").length} live, ${[...ads.values()].filter((a) => a.status === "PENDING").length} waiting, ${[...ads.values()].reduce((s, a) => s + a.taps, 0)} taps\n💳 Credits sold: ${paid.reduce((s, p) => s + p.credits, 0)} (${formatUsd(paid.reduce((s, p) => s + p.cents, 0))})\n🛒 Products: ${products.size} (${[...products.values()].filter((p) => !p.photo).length} without a photo) · 🏪 Shops: ${[...users.values()].filter((x) => x.shop).length}\n\nAdmin commands: STATS · LOOKUP N-1001 · GRANT 0771234567 5 · VERIFY 0771234567 · ADS · PHARMACY 0771234567 · SHOP 0771234567 · PRODUCTS · ADD <product>\n(\"Didn't understand\" shows words to add to the search list.)`,
   );
 }
 
@@ -2565,4 +2858,17 @@ setInterval(() => {
       void closeNeed(need, "EXPIRED").then(() => wa.sendText(need.owner, `Your post "${fit(need.text, 50)}" has expired after 7 days. Type MENU to post it again.`));
     }
   }
+  // Monday price reminder for shops (from 8am Harare). Free-form messages only reach people who
+  // messaged in the last 24 hours, so the others get it next time a template is approved.
+  const harare = new Date(now + 2 * 3600_000);
+  if (harare.getUTCDay() === 1 && harare.getUTCHours() >= 8) {
+    const week = weekKey(now);
+    for (const shop of users.values()) {
+      if (!shop.shop || shop.shopReminded === week) continue;
+      shop.shopReminded = week;
+      if (!shop.lastIn || now - shop.lastIn > 23 * 3600_000) continue;
+      void tell(shop.phone, `🏪 Good morning ${shop.shop.name}! Please send this week's prices so shoppers find you. Type PRICES for how.`);
+    }
+  }
 }, 60 * 1000).unref();
+
