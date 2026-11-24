@@ -107,9 +107,9 @@ MENU, HI, HELP, TERMS, CREDITS, STOP (alerts off), PHARMACY (apply as a pharmacy
 
 ### Shop price comparison (groceries and motor spares)
 1. **Scoutly owns the product list and photos.** Shops never upload pictures.
-2. **Shops join** by typing SHOP and sending name, address and hours in one message. Admin approves (🏪). They're told their WhatsApp number is shown to shoppers.
+2. **Shops join** by typing SHOP, sending their name and opening hours, then picking an area: **Bulawayo CBD / Bulawayo suburbs / Outside Bulawayo**. **No street address is asked for, stored or shown** (privacy). Admin approves (🏪). They're told their WhatsApp number is shown to shoppers.
 3. **Shops send prices only:** typed lines (`Olivine cooking oil 2L 3.80`) or an Excel/CSV file (product column, price column). Small typos match; sizes must match exactly. Unknown products go to the admin to add.
-4. **Shoppers** typing e.g. "cheapest cooking oil" see the product photo and shops cheapest first, with how old each price is. Older than 14 days = ⚠️; older than 30 days = hidden. Tapping a shop shows address, hours, number and chat link **free (no credits)**. "Ask sellers too" turns it into a normal post. Car searches never show spare-part prices.
+4. **Shoppers** typing e.g. "cheapest cooking oil" see the product photo and shops cheapest first, with how old each price is. Older than 14 days = ⚠️; older than 30 days = hidden. Each shop line shows its area. Tapping a shop shows area, hours, number and chat link **free (no credits)**. "Ask sellers too" turns it into a normal post. Car searches never show spare-part prices.
 5. Monday 8am reminder to shops. It only reaches shops that messaged in the last 24 hours until a Meta template is approved.
 6. Data: Supabase table `products`; shop details sit on the shop's user record.
 
@@ -164,6 +164,7 @@ Automatic admin alerts: blocked posts, medicine listing attempts, reports, new a
 | 20–21 Nov | Bundles **$1 = 2, $3 = 7, $5 = 13** credits; **3 free credits every week** (stacking) |
 | 21 Nov | **One-message search** (tester feedback: too many steps, compare with Facebook Marketplace) |
 | 21 Nov | Swap message shows the key facts; chat link pre-types a Scoutly hello; "today" and "this week" posts close when their time passes |
+| 24 Nov | Shops give an **area only** (CBD / suburbs / outside Bulawayo), never a street address, so no location leaks |
 | 24 Nov | **Shop price comparison built** for groceries and motor spares (see section 2). Shop contact is **free** for shoppers; shops are **free** at first (charge later for featured spots); shops' numbers are public with their consent |
 | 23 Nov | Search understands **brands** (Nike, Adidas, Samsung, HP, Defy, Hisense…), **singular/plural** (shoe = shoes) and **typos** (niker → Nike, samsang → Samsung), so most searches skip the category question |
 | 23 Nov | No "anything else?" after every step; greetings like *hie, hey, howzit, good morning* open the menu; listing examples match the chosen category; short chat links (`/c/<code>`) instead of long wa.me links; unclear searches ask **one** category question (no item-or-service step) |

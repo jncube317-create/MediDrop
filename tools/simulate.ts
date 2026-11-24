@@ -508,9 +508,11 @@ async function main(): Promise<void> {
 
     await onboard(SHOP1, "Mai Tino");
     r = await send(SHOP1, { text: "SHOP" });
-    check(has(r, SHOP1, /List your shop's prices[\s\S]*WhatsApp number[\s\S]*we supply the product photos/), "SHOP explains the deal: prices only, number shown");
-    r = await send(SHOP1, { text: "Tino's Superette, 4 Main Street Nkulumane, open 7am to 8pm daily" });
-    check(has(r, SHOP1, /check your shop/) && has(r, ADMIN, /Shop application/), "shop application goes to admin");
+    check(has(r, SHOP1, /List your shop's prices[\s\S]*WhatsApp number[\s\S]*never show a street address[\s\S]*we supply the product photos/), "SHOP explains the deal: prices only, number shown, no address");
+    r = await send(SHOP1, { text: "Tino's Superette, open 7am to 8pm daily" });
+    check(has(r, SHOP1, /Where is your shop/) && has(r, SHOP1, /shoparea:cbd "Bulawayo CBD"/) && has(r, SHOP1, /shoparea:out "Outside Bulawayo"/), "shop picks an area instead of an address");
+    r = await send(SHOP1, { reply: "shoparea:subs" });
+    check(has(r, SHOP1, /check your shop/) && has(r, ADMIN, /Shop application[\s\S]*📍 Bulawayo suburbs/), "shop application (with area) goes to admin");
     r = await send(ADMIN, { reply: option(r, ADMIN, /^shop:ok:\d+/) });
     check(has(r, SHOP1, /Tino's Superette\* is approved[\s\S]*How to send prices/), "approved shop is told how to send prices");
     r = await send(SHOP1, { text: "Olivine cooking oil 2L 3.80\nGold leaf mealie meal 10kg - $7.20\nMazoe orange 2L 4.50" });
@@ -519,7 +521,8 @@ async function main(): Promise<void> {
 
     await onboard(SHOP2, "Baba Spares");
     await send(SHOP2, { text: "SHOP" });
-    r = await send(SHOP2, { text: "Spares Hub, 22 Fort Street Bulawayo CBD, Mon-Sat 8am-5pm" });
+    await send(SHOP2, { text: "Spares Hub, Mon-Sat 8am-5pm" });
+    await send(SHOP2, { reply: "shoparea:cbd" });
     await send(ADMIN, { text: "SHOP 0786666666" });
     r = await send(SHOP2, { doc: "prices.xlsx" });
     check(has(r, SHOP2, /3 prices updated[\s\S]*Brake pads[\s\S]*\$24\.00/), "shop's Excel price list is read");
@@ -527,13 +530,14 @@ async function main(): Promise<void> {
     check(has(r, BUYER2, /only used for shop price lists/), "non-shops sending files get a polite note");
 
     r = await send(CUSTOMER, { text: "cheapest cooking oil 2L" });
-    check(has(r, CUSTOMER, /Olivine cooking oil 2L[\s\S]*🥇 \*\$3\.65\* · Spares Hub[\s\S]*2\. \*\$3\.80\* · Tino's Superette[\s\S]*saves you \*\$0\.15\*/), "shopper sees shop prices cheapest first");
+    check(has(r, CUSTOMER, /Olivine cooking oil 2L[\s\S]*🥇 \*\$3\.65\* · Spares Hub \(Bulawayo CBD\)[\s\S]*2\. \*\$3\.80\* · Tino's Superette \(Bulawayo suburbs\)[\s\S]*saves you \*\$0\.15\*/), "shopper sees shop prices cheapest first");
     check(has(r, CUSTOMER, /cmp:shops:PR-001/) && !has(r, CUSTOMER, /0786666666|78 666 6666/), "numbers aren't dumped in the comparison itself");
     r = await send(CUSTOMER, { reply: "cmp:shops:PR-001" });
     r = await send(CUSTOMER, { reply: option(r, CUSTOMER, /^cmp:shop:263786666666/) });
-    check(has(r, CUSTOMER, /Spares Hub[\s\S]*22 Fort Street[\s\S]*\+263 78 666 6666[\s\S]*\/c\//), "shop details (address, number, chat link) are free");
+    check(has(r, CUSTOMER, /Spares Hub[\s\S]*📍 Bulawayo CBD[\s\S]*Mon-Sat 8am-5pm[\s\S]*\+263 78 666 6666[\s\S]*\/c\//), "shop details (area, hours, number, chat link) are free");
+    check(!has(r, CUSTOMER, /Fort Street/), "no street address is shown");
     r = await send(CUSTOMER, { text: "brake pads hilux" });
-    check(has(r, CUSTOMER, /Brake pads front Toyota Hilux[\s\S]*\$24\.00\* · Spares Hub/), "spare parts compare the same way");
+    check(has(r, CUSTOMER, /Brake pads front Toyota Hilux[\s\S]*\$24\.00\* · Spares Hub \(Bulawayo CBD\)/), "spare parts compare the same way");
     await send(CUSTOMER, { text: "MENU" });
     r = await send(CUSTOMER, { text: "toyota hilux 2012" });
     check(!has(r, CUSTOMER, /Brake pads/), "a car search doesn't show spare-part prices");

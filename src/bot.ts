@@ -76,7 +76,7 @@ type Step =
   | "CAT_KIND" | "CAT_PICK"
   | "FIND_TEXT" | "FIND_BUDGET" | "FIND_WHEN" | "FIND_DATE" | "FIND_WHERE" | "FIND_CONFIRM"
   | "SELL_TITLE" | "SELL_MILEAGE" | "SELL_DESC" | "SELL_COND" | "SELL_PRICE" | "SELL_PHOTOS" | "SELL_COVER" | "SELL_CONFIRM"
-  | "QUOTE_TEXT" | "PHARM_DETAILS" | "SHOP_DETAILS" | "SHOP_PRICES"
+  | "QUOTE_TEXT" | "PHARM_DETAILS" | "SHOP_DETAILS" | "SHOP_AREA" | "SHOP_PRICES"
   | "AD_TEXT" | "AD_PHOTO" | "AD_WHERE" | "AD_CONFIRM"
   | "BUY_PAYER" | "BUY_OTHER_NUMBER" | "BUY_WAIT";
 
@@ -120,8 +120,9 @@ interface User {
   verified: boolean;
   pharmacy?: { details: string; approvedAt: number } | null; // licensed pharmacy, approved by admin
   pharmacyApplication?: string | null;
-  shop?: { name: string; details: string; approvedAt: number } | null; // approved shop: sends prices
+  shop?: { name: string; details: string; area?: ShopArea; approvedAt: number } | null; // approved shop: sends prices
   shopApplication?: string | null;
+  shopArea?: ShopArea | null; // area picked while applying (no street address is ever stored)
   shopReminded?: string; // week of the last "update your prices" reminder
   lastIn?: number; // when they last messaged us (WhatsApp only allows free-form replies for 24h)
   lastWeekly?: string; // week the free top-up was last checked
@@ -692,6 +693,7 @@ async function conversation(m: Incoming): Promise<void> {
 
   if (id.startsWith("buy:")) return startBuy(u, id.slice(4));
   if (id.startsWith("edit:menu:")) return editMenu(u, id.slice(10));
+  if (id.startsWith("shoparea:") && u.step === "SHOP_AREA" && SHOP_AREAS[id.slice(9) as ShopArea]) return submitShop(u, id.slice(9) as ShopArea);
   if (id.startsWith("cmp:p:")) return showProductPrices(u, id.slice(6));
   if (id.startsWith("cmp:shops:")) return listProductShops(u, id.slice(10));
   if (id.startsWith("cmp:shop:")) return showShop(u, id.slice(9));
@@ -746,17 +748,13 @@ async function conversation(m: Incoming): Promise<void> {
 
     // ---- shops
     case "SHOP_DETAILS": {
-      if (text.length < 20) return void (await wa.sendText(to, "Please send all the details in one message: shop name, address (street, suburb, town) and opening hours."));
-      u.shopApplication = clean(text, 400);
-      u.step = "MENU";
-      track("shop_applied", to, {});
-      await wa.sendText(to, "Thank you 🙏 We'll check your shop and reply here, usually within a day.");
-      if (env.ADMIN_PHONE)
-        await wa.sendButtons(env.ADMIN_PHONE, `🏪 *Shop application*\nFrom: ${nameOf(to)} ${prettyPhone(to)}\n\n"${u.shopApplication}"`, [
-          { id: `shop:ok:${to}`, title: "Approve" },
-          { id: `shop:no:${to}`, title: "Reject" },
-        ]);
-      return;
+      if (text.length < 8) return void (await wa.sendText(to, "Please send your shop name and opening hours in one message, e.g. _Tino's Superette, open 7am to 8pm daily_."));
+      u.shopApplication = clean(text, 200);
+      u.step = "SHOP_AREA";
+      return void (await askShopArea(u));
+    }
+    case "SHOP_AREA": {
+      return void (await askShopArea(u));
     }
     case "SHOP_PRICES": {
       return updateShopPrices(u, text.split(/\n/));
@@ -1185,6 +1183,10 @@ async function reviewPharmacy(admin: string, phone: string, approve: boolean): P
 
 // ---------------------------------------------------------------- shops and price comparison
 
+/** Shops only say which area they're in. No street address is asked for, stored or shown. */
+type ShopArea = "cbd" | "subs" | "out";
+const SHOP_AREAS: Record<ShopArea, string> = { cbd: "Bulawayo CBD", subs: "Bulawayo suburbs", out: "Outside Bulawayo" };
+
 function textOf_rest(t: string): string {
   return t.replace(/^\s*\S+\s*/, "").trim();
 }
@@ -1219,6 +1221,24 @@ async function adminProductPhoto(admin: string, mediaId: string, caption: string
   await wa.sendText(admin, p ? `✅ *${p.id} · ${p.name}* (${catName(p.category)}) is in the product list with your photo. Shops can now send prices for it.` : "Use the caption: ADD Olivine cooking oil 2L");
 }
 
+async function askShopArea(u: User): Promise<void> {
+  await prompt(u, () =>
+    wa.sendButtons(u.phone, "Where is your shop?", (Object.keys(SHOP_AREAS) as ShopArea[]).map((k) => ({ id: `shoparea:${k}`, title: SHOP_AREAS[k] }))),
+  );
+}
+
+async function submitShop(u: User, area: ShopArea): Promise<void> {
+  u.shopArea = area;
+  u.step = "MENU";
+  track("shop_applied", u.phone, { area });
+  await wa.sendText(u.phone, "Thank you 🙏 We'll check your shop and reply here, usually within a day.");
+  if (env.ADMIN_PHONE)
+    await wa.sendButtons(env.ADMIN_PHONE, `🏪 *Shop application*\nFrom: ${nameOf(u.phone)} ${prettyPhone(u.phone)}\n📍 ${SHOP_AREAS[area]}\n\n"${u.shopApplication ?? ""}"`, [
+      { id: `shop:ok:${u.phone}`, title: "Approve" },
+      { id: `shop:no:${u.phone}`, title: "Reject" },
+    ]);
+}
+
 async function askShopDetails(u: User): Promise<void> {
   if (u.shop) return askShopPrices(u);
   u.draft = {};
@@ -1226,7 +1246,7 @@ async function askShopDetails(u: User): Promise<void> {
   await prompt(u, () =>
     wa.sendText(
       u.phone,
-      "🏪 *List your shop's prices on Scoutly*\n\nShoppers comparing prices will see your shop, address and WhatsApp number. You only send prices; we supply the product photos.\n\nSend in *one message*:\n1. Shop name\n2. Address (street, suburb, town)\n3. Opening hours",
+      "🏪 *List your shop's prices on Scoutly*\n\nShoppers comparing prices will see your shop name, area (e.g. Bulawayo CBD), opening hours and WhatsApp number. We never show a street address. You only send prices; we supply the product photos.\n\nSend in *one message*:\n1. Shop name\n2. Opening hours\n\n_Please don't type your street address._",
     ),
   );
 }
@@ -1237,15 +1257,17 @@ async function reviewShop(admin: string, phone: string, approve: boolean): Promi
   if (approve) {
     const details = p.shopApplication ?? p.shop?.details ?? "";
     const name = clean(details.split(/[\n,]/)[0] ?? p.profile?.name ?? p.name ?? "Shop", 40);
-    p.shop = { name, details, approvedAt: Date.now() };
+    const area = p.shopArea ?? p.shop?.area;
+    p.shop = { name, details, ...(area ? { area } : {}), approvedAt: Date.now() };
     track("shop_approved", phone, {});
     await wa.sendText(admin, `✅ ${name} is now a shop.`);
     await tell(phone, `✅ *${name}* is approved as a shop on ${env.APP_NAME}.\n\n${PRICE_HELP}`);
   } else {
     await wa.sendText(admin, `Rejected ${nameOf(phone)}'s shop application.`);
-    await tell(phone, "Sorry, we couldn't approve your shop yet. Reply SHOP to apply again with your shop name, address and hours.");
+    await tell(phone, "Sorry, we couldn't approve your shop yet. Reply SHOP to apply again.");
   }
   p.shopApplication = null;
+  p.shopArea = null;
 }
 
 const PRICE_HELP =
@@ -1303,7 +1325,7 @@ function productImage(p: Product): string {
 
 function shopLine(phone: string, cents: number, at: number, stale: boolean): string {
   const s = users.get(phone)?.shop;
-  return `*${formatUsd(cents)}* · ${fit(s?.name ?? nameOf(phone), 30)} · ${ageLabel(at)}${stale ? " ⚠️" : ""}`;
+  return `*${formatUsd(cents)}* · ${fit(s?.name ?? nameOf(phone), 30)}${s?.area ? ` (${SHOP_AREAS[s.area]})` : ""} · ${ageLabel(at)}${stale ? " ⚠️" : ""}`;
 }
 
 /** Shop price comparison: one product shows its prices; several show as cards to pick from. */
@@ -1350,9 +1372,9 @@ async function listProductShops(u: User, productId: string): Promise<void> {
   if (!p) return showMenu(u, "That product isn't listed any more.");
   await wa.sendList(
     u.phone,
-    `Shops with *${fit(p.name, 50)}*, cheapest first. Tap one for the address, hours and number.`,
+    `Shops with *${fit(p.name, 50)}*, cheapest first. Tap one for the area, hours and number.`,
     "Shops",
-    livePrices(p).slice(0, 10).map((x) => ({ id: `cmp:shop:${x.shop}`, title: fit(users.get(x.shop)?.shop?.name ?? nameOf(x.shop), 24), description: fit(`${formatUsd(x.cents)} · ${ageLabel(x.at)}`, 72) })),
+    livePrices(p).slice(0, 10).map((x) => ({ id: `cmp:shop:${x.shop}`, title: fit(users.get(x.shop)?.shop?.name ?? nameOf(x.shop), 24), description: fit(`${formatUsd(x.cents)}${users.get(x.shop)?.shop?.area ? ` · ${SHOP_AREAS[users.get(x.shop)!.shop!.area!]}` : ""} · ${ageLabel(x.at)}`, 72) })),
     "Shops",
   );
 }
@@ -1363,7 +1385,7 @@ async function showShop(u: User, phone: string): Promise<void> {
   track("shop_viewed", u.phone, {});
   await wa.sendText(
     u.phone,
-    `🏪 *${s.name}*\n${s.details}\n\n📞 ${prettyPhone(phone)}\n💬 ${shortChatFor(phone, `Hi ${s.name} 👋 I saw your prices on Scoutly.`)}\n\nPrices come from the shop; confirm in store.\n\n_Type MENU any time._`,
+    `🏪 *${s.name}*${s.area ? `\n📍 ${SHOP_AREAS[s.area]}` : ""}\n🕒 ${s.details}\n\n📞 ${prettyPhone(phone)}\n💬 ${shortChatFor(phone, `Hi ${s.name} 👋 I saw your prices on Scoutly.`)}\n\nPrices come from the shop; confirm in store.\n\n_Type MENU any time._`,
   );
 }
 
