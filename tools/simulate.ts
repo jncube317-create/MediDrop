@@ -301,14 +301,14 @@ async function main(): Promise<void> {
     r = await send(PROVIDER, { text: "abc" });
     check(has(r, PROVIDER, /Type the price in US dollars/), "rejects a price that isn't a number");
     r = await send(PROVIDER, { text: "$300" });
-    check(has(r, PROVIDER, /Send up to 3 photos/), "asks for photos");
+    check(has(r, PROVIDER, /Send up to 3 photos[\s\S]*shown first in Scoutly Marketplace/), "asks for photos and says photos come first in the marketplace");
     r = await send(PROVIDER, { image: "media-1" }, 700);
     check(has(r, PROVIDER, /Photo 1 saved/), "photo downloaded and saved");
     await send(PROVIDER, { reply: "photos:done" });
     r = await send(PROVIDER, { reply: "cover:city" });
     check(has(r, PROVIDER, /\[photo [a-f0-9-]{36}\.jpg\][\s\S]*Check your listing[\s\S]*Pre-loved · good[\s\S]*\$300\n[\s\S]*Listing score: 80%/), "summary shows the seller's photo and a listing score");
     r = await send(PROVIDER, { reply: "list:post" });
-    check(has(r, PROVIDER, /You're listed/), "listed");
+    check(has(r, PROVIDER, /You're listed[\s\S]*live in \*Scoutly Marketplace\*/), "listed, and told it's live in Scoutly Marketplace");
     const alertCard = option(r, BUYER2, /^int:O-\d+:N-1003/);
     check(has(r, BUYER2, /New match\* for your post "fridge[\s\S]*Hisense fridge 200L[\s\S]*\$300 · Pre-loved/) && Boolean(alertCard), "buyer with alerts gets the new fridge instantly");
 

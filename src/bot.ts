@@ -1217,7 +1217,8 @@ function marketListings(u: User, anywhere: boolean, category?: string): Listing[
     .filter((l) => l.kind === "item" && l.active && !l.sold && l.category !== "pharmacy")
     .filter((l) => !town || l.city === town || l.nationwide)
     .filter((l) => !category || l.category === category)
-    .sort((a, b) => b.createdAt - a.createdAt);
+    // Listings with real photos first (they sell better and make the market look alive), then newest first.
+    .sort((a, b) => Number(b.photos.length > 0) - Number(a.photos.length > 0) || b.createdAt - a.createdAt);
 }
 
 async function showMarket(u: User, anywhere: boolean): Promise<void> {
@@ -2084,7 +2085,7 @@ async function askPhotos(u: User): Promise<void> {
   await prompt(u, () =>
     required
       ? wa.sendText(u.phone, `📸 Send 1 to 3 photos of ${what} now. *At least 1 photo is needed* for ${catName(u.draft.category ?? "").toLowerCase()}.`)
-      : wa.sendButtons(u.phone, `📸 Send up to 3 photos of ${what} now. Listings with photos get far more interest.\n\nTap *Done* when you've sent them.`, [
+      : wa.sendButtons(u.phone, `📸 Send up to 3 photos of ${what} now. Listings with photos get far more interest${u.draft.kind === "item" ? " and are shown first in Scoutly Marketplace" : ""}.\n\nTap *Done* when you've sent them.`, [
           { id: "photos:done", title: "Done" },
           { id: "photos:skip", title: "No photos" },
         ]),
@@ -2171,7 +2172,7 @@ async function createListing(u: User): Promise<void> {
   track("listing_created", u.phone, { category: l.category, kind: l.kind, condition: l.condition, photos: l.photos.length, nationwide: l.nationwide });
   await wa.sendText(
     u.phone,
-    `✅ *You're listed* (${l.id})\n\nWhen someone ${l.kind === "item" ? "looks for this" : "posts a matching job"}, it comes to you here. No more posting in groups and hoping.\n\nYou have ${credits(ledger.balance(u.phone))}. A swap uses ${credits(cat.swapCost)}, only when you accept.`,
+    `✅ *You're listed* (${l.id})\n\n${l.kind === "item" && l.category !== "pharmacy" ? "🛍️ Your item is live in *Scoutly Marketplace*, where anyone browsing can see it, and we'll match it to people searching for it. " : ""}When someone ${l.kind === "item" ? "looks for this" : "posts a matching job"}, it comes to you here. No more posting in groups and hoping.\n\nYou have ${credits(ledger.balance(u.phone))}. A swap uses ${credits(cat.swapCost)}, only when you accept.`,
   );
 
   // Open posts from before this listing existed.
