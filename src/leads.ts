@@ -23,6 +23,7 @@ export interface Lead {
   createdAt: number;
   updatedAt: number;
   rated: boolean;
+  ratingAsked?: boolean; // the seller asked the buyer for a rating (once per swap)
   reported: boolean;
 }
 

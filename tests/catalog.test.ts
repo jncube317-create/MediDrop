@@ -90,3 +90,18 @@ test("marketplace pages: 9 per page, See more until the end, bad page numbers ar
   assert.deepEqual(marketPage(20, 99, 9), { start: 18, end: 20, left: 0, next: null });
   assert.deepEqual(marketPage(20, -5, 9), { start: 0, end: 9, left: 11, next: 1 });
 });
+
+test("seller rating belongs to the profile: adds up across all their listings", async () => {
+  const { sellerStats, level } = await import("../src/match");
+  const all = [
+    { owner: "joe", ratingSum: 9, ratingCount: 2, jobs: 3 },
+    { owner: "joe", ratingSum: 5, ratingCount: 1, jobs: 2 },
+    { owner: "ann", ratingSum: 1, ratingCount: 1, jobs: 1 },
+  ];
+  const st = sellerStats("joe", all);
+  assert.equal(st.ratingCount, 3);
+  assert.equal(st.jobs, 5);
+  assert.ok(Math.abs(st.avg - 14 / 3) < 1e-9);
+  assert.equal(level(st.jobs, st.avg), "Silver");
+  assert.deepEqual(sellerStats("nobody", all), { ratingSum: 0, ratingCount: 0, jobs: 0, avg: 0 });
+});

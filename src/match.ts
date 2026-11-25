@@ -99,6 +99,23 @@ export function quoteCents(quote: string | null): number {
   return m?.[1] ? Math.round(Number(m[1]) * 100) : Infinity;
 }
 
+/**
+ * A seller's rating belongs to their profile: stars and swaps add up across ALL their listings
+ * (sold and old ones included), so a new listing starts with the seller's reputation.
+ */
+export function sellerStats(owner: string, all: Iterable<{ owner: string; ratingSum: number; ratingCount: number; jobs: number }>): { ratingSum: number; ratingCount: number; jobs: number; avg: number } {
+  let ratingSum = 0;
+  let ratingCount = 0;
+  let jobs = 0;
+  for (const l of all) {
+    if (l.owner !== owner) continue;
+    ratingSum += l.ratingSum;
+    ratingCount += l.ratingCount;
+    jobs += l.jobs;
+  }
+  return { ratingSum, ratingCount, jobs, avg: ratingCount ? ratingSum / ratingCount : 0 };
+}
+
 export type Level = "New" | "Bronze" | "Silver" | "Gold";
 
 /** Seller level from completed swaps and rating. Higher levels show first and earn more trust. */

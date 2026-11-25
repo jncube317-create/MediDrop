@@ -47,7 +47,7 @@ import {
   medicineWord,
 } from "./data";
 import { Ledger, type Entry } from "./credits";
-import { LEVEL_ICON, averageRating, eligible, level, profileScore, quoteCents, rankItems, rankProviders } from "./match";
+import { LEVEL_ICON, eligible, level, profileScore, quoteCents, rankItems, rankProviders, sellerStats } from "./match";
 import { chatLink, isOpen, isStale, moveLead, prettyPhone, type Lead } from "./leads";
 import { formatUsd } from "./money";
 import { checkPayment, startPayment } from "./pay";
@@ -448,11 +448,12 @@ function priceLabel(l: Listing): string {
 
 /** About the SELLER, never the item, so "new" can't be mistaken for the item's condition. */
 function badges(l: Listing): string {
-  const avg = averageRating(l);
-  const lv = level(l.jobs, avg);
+  const st = sellerStats(l.owner, listings.values()); // the seller's whole profile, not just this listing
+  const avg = st.avg;
+  const lv = level(st.jobs, avg);
   const owner = users.get(l.owner);
   const who = lv === "New" ? "Seller: 🆕 new on Scoutly" : `Seller: ${LEVEL_ICON[lv]} ${lv}`;
-  const stars = l.ratingCount ? `⭐ ${avg.toFixed(1)} (${l.ratingCount})` : "no ratings yet";
+  const stars = st.ratingCount ? `⭐ ${avg.toFixed(1)} (${st.ratingCount})` : "no ratings yet";
   const tick = owner?.pharmacy ? " · 💊 Licensed" : owner?.verified ? " · ✅ Verified" : "";
   return `${who} · ${stars}${tick}`;
 }
@@ -747,6 +748,8 @@ async function conversation(m: Incoming): Promise<void> {
   }
   if (id.startsWith("shoparea:") && u.step === "SHOP_AREA" && SHOP_AREAS[id.slice(9) as ShopArea]) return submitShop(u, id.slice(9) as ShopArea);
   if (id === "support:new") return askSupport(u);
+  if (id.startsWith("askrate:pick:")) return pickRatingRequest(u, id.slice(13));
+  if (id.startsWith("askrate:")) return requestRating(u, id.slice(8));
   {
     const m = id.match(/^still:(yes|price|sold):(O-\d+)$/);
     if (m) return stillAnswer(u, m[2]!, m[1] as "yes" | "price" | "sold");
@@ -1175,10 +1178,8 @@ async function addProfilePhoto(u: User, mediaId: string): Promise<void> {
 }
 
 function profileCard(u: User, p: Profile): string {
-  const mine = [...listings.values()].filter((l) => l.owner === u.phone);
-  const count = mine.reduce((n, l) => n + l.ratingCount, 0);
-  const avg = count ? mine.reduce((n, l) => n + l.ratingSum, 0) / count : 0;
-  const rating = count ? `⭐ ${avg.toFixed(1)} (${count})` : "No ratings yet";
+  const st = sellerStats(u.phone, listings.values());
+  const rating = st.ratingCount ? `⭐ ${st.avg.toFixed(1)} (${st.ratingCount}) · ${LEVEL_ICON[level(st.jobs, st.avg)]} ${level(st.jobs, st.avg)}` : "No ratings yet";
   return `*${p.name}*\n📍 ${cityName(u.city)} · ${u.pharmacy ? "💊 Licensed pharmacy" : u.verified ? "✅ Verified" : "🆕 New member"} · ${rating}\n\n${p.about}`;
 }
 
@@ -2694,7 +2695,7 @@ async function connect(lead: Lead): Promise<void> {
   );
   await tell(
     lead.provider,
-    `✅ *New customer: ${buyer}* (via Scoutly)\n\n${deal}\n\n📞 ${prettyPhone(lead.customer)}\n💬 Tap to chat: ${chatLink(lead.customer, SCOUTLY_HELLO)}\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.provider))}.\n${LIABILITY}`,
+    `✅ *New customer: ${buyer}* (via Scoutly)\n\n${deal}\n\n📞 ${prettyPhone(lead.customer)}\n💬 Tap to chat: ${chatLink(lead.customer, SCOUTLY_HELLO)}\n\n⭐ After the deal, ask them for a rating: *My posts → your listing → Ask for rating*. Good ratings bring more buyers.\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.provider))}.\n${LIABILITY}`,
   );
   if (need) {
     if (need.connections >= MAX_CONNECTIONS_PER_NEED) {
@@ -2835,10 +2836,11 @@ async function showPost(u: User, type: string, postId: string): Promise<void> {
   const asked = [...leads.values()].filter((x) => x.offerId === l.id);
   const score = profileScore({ photos: l.photos.length, text: l.text, hasPrice: l.priceCents !== null || Boolean(l.priceText), verified: u.verified });
   const buttons = [
+    ...(rateable(u.phone, l.id).length ? [{ id: `askrate:pick:${l.id}`, title: "⭐ Ask for rating" }] : []),
     ...(l.kind === "item" && !l.sold ? [{ id: `sold:${l.id}`, title: "Mark as sold" }] : []),
     ...(!l.sold ? [l.active ? { id: `pause:${l.id}`, title: "Pause" } : { id: `resume:${l.id}`, title: "Turn back on" }] : []),
     { id: "menu:main", title: "Main menu" },
-  ];
+  ].slice(0, 3);
   await wa.sendButtons(
     u.phone,
     `*${l.id}* · ${l.sold ? "Sold" : l.active ? "Live" : "Paused"}\n🏷️ ${l.kind === "item" ? l.title : catName(l.category)} · ${priceLabel(l)}\n${badges(l)}\n📬 ${plural(asked.length, "buyer")} interested · 🤝 ${plural(l.jobs, "swap")}\n📈 Listing score: ${score.score}%${score.tip ? `. ${score.tip}` : ""}`,
@@ -2859,6 +2861,13 @@ async function markSold(u: User, listingId: string): Promise<void> {
     if (ledger.release(`${lead.id}:c`)) await wa.sendText(lead.customer, `Sorry, the ${fit(l.title, 40)} has just been sold. Your ${credits(lead.cost)} are back.`);
   }
   track("listing_sold", u.phone, { category: l.category });
+  if (rateable(u.phone, l.id).length) {
+    u.step = "MENU";
+    return void (await wa.sendButtons(u.phone, `🎉 Marked as sold. Buyers won't see the ${fit(l.title, 40)} any more.\n\n⭐ Ask your buyer for a rating? Good ratings bring you more buyers next time.`, [
+      { id: `askrate:pick:${l.id}`, title: "⭐ Ask for rating" },
+      { id: "menu:main", title: "Main menu" },
+    ]));
+  }
   await anythingElse(u.phone, `🎉 Marked as sold. Buyers won't see the ${fit(l.title, 40)} any more.\n\nAnything else?`);
 }
 
@@ -2869,6 +2878,40 @@ async function pickWhoToRate(u: User, needId: string): Promise<void> {
   if (!unrated.length) return void (await wa.sendText(u.phone, "You've rated everyone for this post. Thank you!"));
   if (unrated.length === 1 && unrated[0]) return askRatingFor(u, unrated[0].id);
   await wa.sendList(u.phone, "Who do you want to rate?", "Choose", unrated.map((l) => ({ id: `ratepick:${l.id}`, title: fit(nameOf(l.provider), 24) })), "Contacts");
+}
+
+/** Swaps on this listing the seller can still ask a rating for (connected, not rated, not asked yet). */
+function rateable(seller: string, listingId: string): Lead[] {
+  return [...leads.values()].filter((x) => x.offerId === listingId && x.provider === seller && x.status === "CONNECTED" && !x.rated && !x.ratingAsked);
+}
+
+async function pickRatingRequest(u: User, listingId: string): Promise<void> {
+  const l = listings.get(listingId);
+  if (!l || l.owner !== u.phone) return didntGetThat(u);
+  const open = rateable(u.phone, listingId);
+  if (!open.length) return anythingElse(u.phone, "You've already asked everyone you swapped with on this listing. Each swap gets one rating request.");
+  if (open.length === 1) return requestRating(u, open[0]!.id);
+  await wa.sendList(u.phone, "Who would you like to ask for a rating?", "Choose", open.slice(0, 10).map((x) => ({ id: `askrate:${x.id}`, title: fit(nameOf(x.customer), 24) })), "Buyers");
+}
+
+/** The seller asks the buyer to rate them: one request per swap, only after a real swap. */
+async function requestRating(u: User, leadId: string): Promise<void> {
+  const lead = leads.get(leadId);
+  if (!lead || lead.provider !== u.phone || lead.status !== "CONNECTED") return didntGetThat(u);
+  if (lead.rated) return anythingElse(u.phone, `${nameOf(lead.customer)} has already rated you. Thank you!`);
+  if (lead.ratingAsked) return anythingElse(u.phone, `You've already asked ${nameOf(lead.customer)}. Each swap gets one rating request.`);
+  lead.ratingAsked = true;
+  const l = listings.get(lead.offerId);
+  const what = l ? (l.kind === "item" ? fit(l.title, 40) : catName(l.category).toLowerCase()) : "your deal";
+  track("rating_requested", u.phone, {});
+  await wa.sendList(
+    lead.customer,
+    `⭐ *${nameOf(u.phone)}* asks: how was your deal for *${what}*? Your stars help other buyers choose who to trust.`,
+    "Rate",
+    [5, 4, 3, 2, 1].map((n) => ({ id: `rating:${lead.id}:${n}`, title: `${"★".repeat(n)} ${["", "Bad", "Poor", "Okay", "Good", "Excellent"][n]}` })),
+    "Rating",
+  );
+  await anythingElse(u.phone, `✅ We've asked ${nameOf(lead.customer)} to rate you. You'll get a message when they do.`);
 }
 
 async function askRatingFor(u: User, leadId: string): Promise<void> {
@@ -2893,9 +2936,10 @@ async function saveRating(u: User, leadId: string, stars: number): Promise<void>
   lead.rated = true;
   l.ratingSum += stars;
   l.ratingCount += 1;
-  track("rated", u.phone, { stars, category: l.category });
-  await wa.sendText(u.phone, `Thanks! You gave ${nameOf(l.owner)} ${stars}/5.`);
-  await tell(l.owner, `⭐ ${nameOf(u.phone)} rated you ${stars}/5. Your rating is now ${averageRating(l).toFixed(1)} from ${plural(l.ratingCount, "review")}. ${badges(l)}`);
+  track("rated", u.phone, { stars, category: l.category, asked: Boolean(lead.ratingAsked) });
+  // No thank-you to the buyer (saves a message); the seller hears straight away.
+  const st = sellerStats(l.owner, listings.values());
+  await tell(l.owner, `⭐ ${nameOf(u.phone)} rated you ${stars}/5. Your profile rating is now ${st.avg.toFixed(1)} from ${plural(st.ratingCount, "review")} · ${LEVEL_ICON[level(st.jobs, st.avg)]} ${level(st.jobs, st.avg)}.`);
 }
 
 async function closeMyNeed(u: User, needId: string): Promise<void> {

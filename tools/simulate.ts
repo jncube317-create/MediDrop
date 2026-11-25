@@ -361,14 +361,34 @@ async function main(): Promise<void> {
     const compare = r.find((m) => m.to === BUYER2 && /quotes so far/.test(m.body));
     check(Boolean(compare && /Joe/.test(compare.options[0] ?? "") && /Sipho/.test(compare.options[1] ?? "")), "compare list shows quotes cheapest first (Joe $780, then Sipho $850)");
     r = await send(BUYER2, { reply: option(r, BUYER2, /^conn:yes:L\d+/) });
-    check(has(r, BUYER2, /connected with Joe/) && has(r, PROVIDER, /New customer: Rudo[\s\S]*Painter for 6 rooms/), "buyer swaps numbers with the cheapest painter");
+    check(has(r, BUYER2, /connected with Joe/) && has(r, PROVIDER, /New customer: Rudo[\s\S]*Painter for 6 rooms[\s\S]*ask them for a rating/), "buyer swaps numbers with the cheapest painter; seller told to ask for a rating");
 
     // ---- stars only rating
     await send(BUYER2, { reply: "menu:posts" });
     await send(BUYER2, { reply: "post:need:N-1004" });
     r = await send(BUYER2, { reply: "rate:N-1004" });
     r = await send(BUYER2, { reply: option(r, BUYER2, /^rating:L\d+:5/) });
-    check(has(r, PROVIDER, /rated you 5\/5/), "rating saved and seller told");
+    check(has(r, PROVIDER, /rated you 5\/5\. Your profile rating is now 5\.0 from 1 review/), "rating saved on the seller's profile and seller told");
+    check(!r.some((m) => m.to === BUYER2), "no thank-you message to the buyer (saves a message)");
+
+    // ---- seller asks the buyer for a rating (once per swap)
+    {
+      r = await send(PROVIDER, { reply: "menu:posts" });
+      const fridge = option(r, PROVIDER, /^post:list:O-516/);
+      r = await send(PROVIDER, { reply: fridge });
+      check(has(r, PROVIDER, /^askrate:pick:O-516/), "listing view offers ⭐ Ask for rating after a swap");
+      r = await send(PROVIDER, { reply: "askrate:pick:O-516" });
+      check(has(r, BUYER2, /Joe\* asks: how was your deal for \*Hisense fridge 200L\*/) && has(r, BUYER2, /^rating:L\d+:5/), "buyer gets the star question from the seller");
+      check(has(r, PROVIDER, /We've asked Rudo to rate you/), "seller is told the request went out");
+      const star = option(r, BUYER2, /^rating:L\d+:4/);
+      r = await send(PROVIDER, { reply: "askrate:pick:O-516" });
+      check(has(r, PROVIDER, /already asked everyone/) && !r.some((m) => m.to === BUYER2), "only one request per swap");
+      r = await send(BUYER2, { reply: star });
+      check(has(r, PROVIDER, /rated you 4\/5\. Your profile rating is now 4\.5 from 2 reviews/), "both ratings add up on Joe's profile");
+      r = await send(PROVIDER, { reply: "menu:profile" });
+      await send(PROVIDER, { text: "MENU" });
+      await send(BUYER2, { text: "MENU" });
+    }
 
     // ---- illegal posts are blocked and flagged
     await onboard(ADMIN, "Ann");
