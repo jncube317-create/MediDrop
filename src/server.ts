@@ -4,7 +4,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { env, paynowConfigured } from "./env";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { handleIncoming, confirmPurchase, flushState, initState, resolveChat, holdFailed, type Incoming } from "./bot";
+import { handleIncoming, confirmPurchase, flushState, initState, resolveChat, holdFailed, testAgeListing, type Incoming } from "./bot";
 import { MEDIA_DIR, SAFE_FILE } from "./media";
 
 const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 });
@@ -99,6 +99,13 @@ app.get("/", async () => ({ app: `${env.APP_NAME} demo`, status: "running" }));
 // Demo listing photos (public/demo) and photos people send the bot (MEDIA_DIR).
 const DEMO_DIR = join(process.cwd(), "public", "demo");
 // Short chat links from the swap message: /c/AbC12xYz9q → the WhatsApp chat with the pre-typed hello.
+// Simulator only: age a listing to test "Still available?". Does nothing unless SAMPLE_PROVIDERS=true.
+app.post("/test/age", async (req, reply) => {
+  if (!env.SAMPLE_PROVIDERS) return reply.code(404).send();
+  const { id, days } = (req.body ?? {}) as { id?: string; days?: number };
+  return reply.send({ ok: await testAgeListing(String(id ?? ""), Number(days ?? 0)) });
+});
+
 app.get("/c/:code", async (req, reply) => {
   const target = resolveChat((req.params as { code: string }).code);
   if (!target) return reply.code(404).type("text/plain").send("This chat link has expired. Open Scoutly on WhatsApp and type MENU.");

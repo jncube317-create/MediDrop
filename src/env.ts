@@ -30,6 +30,8 @@ export const env = {
   // Optional: gets reports and can type STATS. Can also use the bot normally.
   // Falls back to the Greens STAFF_PHONE so the Greens Railway service works unchanged.
   ADMIN_PHONE: digitsOnly(optional("ADMIN_PHONE") || optional("STAFF_PHONE")),
+  // Where "Talk to a person" requests go. Empty = the admin phone (until a support number is chosen).
+  SUPPORT_PHONE: digitsOnly(optional("SUPPORT_PHONE") || optional("ADMIN_PHONE") || optional("STAFF_PHONE")),
   PUBLIC_URL: optional("PUBLIC_URL") || (railwayDomain ? `https://${railwayDomain}` : ""),
   // Sample listings, providers and ads so a one-phone demo works. Set false for real use.
   // Demo listings and ads are OFF unless SAMPLE_PROVIDERS=true (only the test simulator turns them on).

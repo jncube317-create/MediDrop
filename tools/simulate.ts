@@ -158,7 +158,7 @@ async function onboard(phone: string, name: string, role: "buy" | "sell" = "buy"
   check(has(r, phone, /city:byo/), `${name}: asks for their town`);
   r = await send(phone, { reply: "city:byo" });
   check(has(r, phone, /You have 3 free credits/), `${name}: 3 free credits on sign-up`);
-  check(has(r, phone, /role:buy/) && has(r, phone, /role:sell/) && has(r, phone, /role:both/), `${name}: asked whether they're buying or selling`);
+  check(has(r, phone, /role:buy/) && has(r, phone, /role:sell/) && has(r, phone, /role:shop "🏪 I own a shop"/), `${name}: asked: buying, selling or own a shop`);
   r = await send(phone, { reply: role === "buy" ? "role:buy" : "role:sell" });
   check(has(r, phone, /quick profile[\s\S]*Everyone on Scoutly has one/) && has(r, phone, /Step 1 of 3/) && has(r, phone, /prof:usename/), `${name}: everyone starts a profile`);
   r = await send(phone, { reply: "prof:usename" });
@@ -611,6 +611,52 @@ async function main(): Promise<void> {
       r = await send(PROVIDER, { reply: "held:show" });
       check(has(r, PROVIDER, /all caught up/), "tapping Show me again: all caught up");
       await send(CUSTOMER, { text: "MENU" });
+    }
+
+    // ---- sign-up: "I own a shop" goes straight into the shop application
+    {
+      const SHOP3 = "263787777777";
+      await send(SHOP3, { text: "hi" });
+      await send(SHOP3, { reply: "consent:yes" });
+      await send(SHOP3, { text: "Nomsa" });
+      r = await send(SHOP3, { reply: "city:byo" });
+      check(has(r, SHOP3, /Shop owner:\* send your prices/), "sign-up explains the shop option");
+      r = await send(SHOP3, { reply: "role:shop" });
+      check(has(r, SHOP3, /List your shop's prices on Scoutly[\s\S]*Step 1 of 4/), "'I own a shop' opens the shop application straight away");
+      await send(SHOP3, { text: "MENU" });
+    }
+
+    // ---- help desk: Talk to a person → admin (support) → REPLY
+    r = await send(CUSTOMER, { reply: "menu:support" });
+    check(has(r, CUSTOMER, /Talk to a person[\s\S]*one message/), "Talk to a person asks for the question");
+    r = await send(CUSTOMER, { text: "How do I change my listing price?" });
+    check(has(r, CUSTOMER, /Sent to the Scoutly team/) && has(r, ADMIN, /Help request\* from Sizwe[\s\S]*change my listing price[\s\S]*REPLY 0771234567/), "help request reaches the admin with how to reply");
+    r = await send(ADMIN, { text: "REPLY 0771234567 Open My posts, pick the listing and tap Edit." });
+    check(has(r, CUSTOMER, /Scoutly team:\*\nOpen My posts, pick the listing and tap Edit\./) && has(r, CUSTOMER, /support:new "💬 Reply to team"/) && has(r, ADMIN, /Sent to Sizwe/), "REPLY reaches the user with a way to answer");
+    await send(ADMIN, { text: "MENU" });
+    await send(CUSTOMER, { text: "MENU" });
+
+    // ---- "Still available?" every 14 days; paused after 3 days of silence
+    {
+      const lid = outbox.filter((m) => m.to === PROVIDER).map((m) => m.body.match(/You're listed\* \((O-\d+)\)/)?.[1]).filter(Boolean).pop()!;
+      const age = async (days: number) => {
+        await fetch(`http://localhost:${BOT_PORT}/test/age`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: lid, days }) });
+        await sleep(400);
+        return flush();
+      };
+      r = await age(15);
+      check(has(r, PROVIDER, /still for sale\?/) && has(r, PROVIDER, new RegExp(`^still:yes:${lid}`)) && has(r, PROVIDER, /^still:price:/) && has(r, PROVIDER, /^still:sold:/), "14 days on: seller asked 'still for sale?'");
+      r = await send(PROVIDER, { reply: `still:price:${lid}` });
+      check(has(r, PROVIDER, /What's the new price/), "New price asks for the price");
+      r = await send(PROVIDER, { text: "250" });
+      check(has(r, PROVIDER, /New price saved[\s\S]*\$250[\s\S]*another 14 days/), "new price saved, listing stays live");
+      r = await age(15);
+      check(has(r, PROVIDER, /still for sale\?/), "asked again 14 days later");
+      r = await age(4);
+      check(has(r, PROVIDER, /We paused/) && has(r, PROVIDER, new RegExp(`^resume:${lid}`)), "no answer in 3 days: listing paused, with a Resume button");
+      r = await send(PROVIDER, { reply: `resume:${lid}` });
+      check(has(r, PROVIDER, /is live again/), "Resume brings it back");
+      await send(PROVIDER, { text: "MENU" });
     }
 
     // ---- admin: BAN / UNBAN, PAUSE / RESUME, messages counter

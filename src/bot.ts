@@ -76,11 +76,12 @@ type Step =
   | "CAT_KIND" | "CAT_PICK"
   | "FIND_TEXT" | "FIND_BUDGET" | "FIND_WHEN" | "FIND_DATE" | "FIND_WHERE" | "FIND_CONFIRM"
   | "SELL_TITLE" | "SELL_MILEAGE" | "SELL_DESC" | "SELL_COND" | "SELL_PRICE" | "SELL_PHOTOS" | "SELL_COVER" | "SELL_CONFIRM"
-  | "QUOTE_TEXT" | "PHARM_DETAILS" | "SHOP_DETAILS" | "SHOP_KIND" | "SHOP_HOURS" | "SHOP_AREA" | "SHOP_PRICES"
+  | "QUOTE_TEXT" | "PHARM_DETAILS" | "SUPPORT_MSG" | "STILL_PRICE" | "SHOP_DETAILS" | "SHOP_KIND" | "SHOP_HOURS" | "SHOP_AREA" | "SHOP_PRICES"
   | "AD_TEXT" | "AD_PHOTO" | "AD_WHERE" | "AD_CONFIRM"
   | "BUY_PAYER" | "BUY_OTHER_NUMBER" | "BUY_WAIT";
 
 interface Draft {
+  listingId?: string; // "still available?" → new price
   mode?: Mode;
   kind?: Kind;
   category?: string;
@@ -131,6 +132,7 @@ interface User {
   held?: { payload: Record<string, unknown>; at: number }[]; // messages waiting until they're back in the 24-hour window
   heldTemplateAt?: number; // when we last sent the "update waiting" template
   banned?: boolean; // blocked by the admin
+  supportToday?: { day: string; n: number }; // help requests sent today (max 5)
   bannedToldAt?: number;
   lastWeekly?: string; // week the free top-up was last checked
   step: Step;
@@ -189,6 +191,9 @@ interface Listing {
   sampleQuote: string | null;
   createdAt: number;
   adminPaused?: boolean; // hidden by the admin (PAUSE O-512 or BAN); only the admin can bring it back
+  confirmedAt?: number; // seller last said "still for sale" (or listed it)
+  stillAskedAt?: number | null; // when we asked "still available?" and are waiting for an answer
+  autoPaused?: boolean; // paused because they didn't answer "still available?"
 }
 
 interface Ad {
@@ -528,7 +533,7 @@ export async function handleIncoming(m: Incoming): Promise<void> {
   const delivered = me?.held?.length ? await deliverHeld(me) : 0;
   // The template's "Show me" button: the held updates are the answer. Nothing held (already seen) → the menu.
   if (m.kind === "reply" && m.id === "held:show") return delivered ? undefined : void (me ? await showMenu(me, "You're all caught up ✅") : undefined);
-  if (isAdmin(m.from) && /^(stats|lookup|grant|verify|ads|products|add\s+\S|pharmacy\s+\+?\d|unpharmacy\s+\+?\d|shop\s+\+?\d|unshop\s+\+?\d|ban\s+\+?\d|unban\s+\+?\d|pause\s+o-\d|resume\s+o-\d)/i.test(textOf(m))) return adminCommand(m.from, textOf(m));
+  if (isAdmin(m.from) && /^(stats|lookup|grant|verify|ads|products|add\s+\S|pharmacy\s+\+?\d|unpharmacy\s+\+?\d|shop\s+\+?\d|unshop\s+\+?\d|ban\s+\+?\d|unban\s+\+?\d|pause\s+o-\d|resume\s+o-\d|reply\s+\+?\d)/i.test(textOf(m))) return adminCommand(m.from, textOf(m));
   if (isAdmin(m.from) && m.kind === "image" && /^\s*(add|photo)\b/i.test(m.caption ?? "")) return adminProductPhoto(m.from, m.mediaId, m.caption ?? "");
   if (isAdmin(m.from) && m.kind === "reply" && /^shop:(ok|no):\d+$/.test(m.id)) {
     const [, verdict, phone] = m.id.split(":");
@@ -642,6 +647,10 @@ async function conversation(m: Incoming): Promise<void> {
     return showMenu(u, `📍 Your town is now ${city.name}.`);
   }
 
+  if (u.step === "ASK_ROLE" && id === "role:shop") {
+    track("role_chosen", to, { role: "shop" });
+    return askShopDetails(u);
+  }
   if (u.step === "ASK_ROLE") {
     const next = id === "role:buy" ? "find" : id === "role:sell" ? "sell" : id === "role:both" ? "menu" : null;
     if (next) {
@@ -662,6 +671,7 @@ async function conversation(m: Incoming): Promise<void> {
     return showMenu(u, `Hi ${u.name} 👋`);
   }
   if (/^help$/i.test(text)) return showHelp(u);
+  if (/^(support|talk to (a )?(person|human|someone)|agent)$/i.test(text)) return askSupport(u);
   if (/^terms$/i.test(text)) return showTerms(to);
   if (/^credits?$/i.test(text)) return showCredits(u);
   if (/^stop$/i.test(text)) return stopAlerts(u);
@@ -736,6 +746,11 @@ async function conversation(m: Incoming): Promise<void> {
     return void (await prompt(u, () => wa.sendText(u.phone, `*Step 3 of 4:* What are *${u.shopApplication ?? "your shop"}*'s opening hours?\n\nFor example: _Mon to Sat 7am to 8pm, Sun 8am to 1pm_`)));
   }
   if (id.startsWith("shoparea:") && u.step === "SHOP_AREA" && SHOP_AREAS[id.slice(9) as ShopArea]) return submitShop(u, id.slice(9) as ShopArea);
+  if (id === "support:new") return askSupport(u);
+  {
+    const m = id.match(/^still:(yes|price|sold):(O-\d+)$/);
+    if (m) return stillAnswer(u, m[2]!, m[1] as "yes" | "price" | "sold");
+  }
   if (id === "mkt:any" || id === "mkt:town") return showMarket(u, id === "mkt:any");
   {
     const m = id.match(/^mkt:c:([a-z]+):([at]):(\d+)$/);
@@ -775,6 +790,8 @@ async function conversation(m: Incoming): Promise<void> {
       case "menu:city":
         u.changingCity = true;
         return askCity(u);
+      case "menu:support":
+        return askSupport(u);
       case "menu:help":
         return showHelp(u);
     }
@@ -796,6 +813,20 @@ async function conversation(m: Incoming): Promise<void> {
     }
 
     // ---- shops
+    case "SUPPORT_MSG": {
+      if (!text) return void (await wa.sendText(to, "Please type your question as a message."));
+      return sendSupport(u, text);
+    }
+    case "STILL_PRICE": {
+      const l = listings.get(u.draft.listingId ?? "");
+      const cents = parseDollars(text);
+      if (!l || l.owner !== u.phone) return showMenu(u, "Main menu");
+      if (cents === null) return void (await wa.sendText(to, "Type the new price in US dollars, e.g. *250*."));
+      l.priceCents = cents;
+      l.priceText = null;
+      confirmStill(l);
+      return anythingElse(to, `✅ New price saved: *${fit(l.title, 40)}* is now ${priceLabel(l)}. It stays live for another 14 days.`);
+    }
     case "SHOP_DETAILS": {
       const name = clean(text, 40);
       if (name.length < 3) return void (await wa.sendText(to, "What's your shop called? Just the name, e.g. _Tino's Superette_."));
@@ -1094,11 +1125,11 @@ async function askRole(u: User): Promise<void> {
   await prompt(u, () =>
     wa.sendButtons(
       u.phone,
-      `Welcome to ${env.APP_NAME}, ${u.name} 👋 🎁 You have ${WELCOME_CREDITS} free credits.\n\nWhat brings you here?\n\n🔎 *Buying:* tell us what you need and see who's selling it.\n🏷️ *Selling:* list items or services once and buyers come to you.`,
+      `Welcome to ${env.APP_NAME}, ${u.name} 👋 🎁 You have ${WELCOME_CREDITS} free credits.\n\nWhat brings you here?\n\n🔎 *Buying:* tell us what you need and see who's selling it.\n🏷️ *Selling:* list items or services once and buyers come to you.\n🏪 *Shop owner:* send your prices and shoppers comparing prices find you.`,
       [
         { id: "role:buy", title: "🔎 I'm buying" },
         { id: "role:sell", title: "🏷️ I'm selling" },
-        { id: "role:both", title: "Both" },
+        { id: "role:shop", title: "🏪 I own a shop" },
       ],
     ),
   );
@@ -1238,6 +1269,107 @@ async function reviewPharmacy(admin: string, phone: string, approve: boolean): P
     await tell(phone, `Sorry, we couldn't approve your pharmacy application. Reply PHARMACY to apply again with your MCAZ licence details.`);
   }
   p.pharmacyApplication = null;
+}
+
+// ---------------------------------------------------------------- help desk ("Talk to a person")
+
+const SUPPORT_PER_DAY = 5;
+
+async function askSupport(u: User): Promise<void> {
+  u.step = "SUPPORT_MSG";
+  await prompt(u, () =>
+    wa.sendText(u.phone, `💬 *Talk to a person*\n\nType your question in *one message*. Someone from the ${env.APP_NAME} team will reply here, usually within a few hours.\n\n_Type MENU to cancel._`),
+  );
+}
+
+async function sendSupport(u: User, text: string): Promise<void> {
+  u.step = "MENU";
+  const day = weekKey() + new Date(Date.now() + 2 * 3600_000).getUTCDay();
+  const today = u.supportToday?.day === day ? u.supportToday.n : 0;
+  if (today >= SUPPORT_PER_DAY) return anythingElse(u.phone, "We've got your messages for today and will reply as soon as we can 🙏");
+  u.supportToday = { day, n: today + 1 };
+  track("support_asked", u.phone, {});
+  if (!env.SUPPORT_PHONE) return anythingElse(u.phone, "Sorry, our help desk isn't set up yet. Please try again later.");
+  await wa.sendText(
+    env.SUPPORT_PHONE,
+    `💬 *Help request* from ${nameOf(u.phone)} ${prettyPhone(u.phone)} (${cityName(u.city)}):\n\n"${fit(text, 800)}"\n\nAnswer with: *REPLY ${localPhone(u.phone)} your answer*`,
+  );
+  await anythingElse(u.phone, `✅ Sent to the ${env.APP_NAME} team. We'll reply here, usually within a few hours.`);
+}
+
+function localPhone(phone: string): string {
+  return phone.startsWith("263") ? `0${phone.slice(3)}` : phone;
+}
+
+// ---------------------------------------------------------------- "Still available?" (keeps the Marketplace fresh)
+
+const STILL_EVERY_MS = 14 * 24 * 3600_000;
+const STILL_WAIT_MS = 3 * 24 * 3600_000;
+
+function confirmStill(l: Listing): void {
+  l.confirmedAt = Date.now();
+  l.stillAskedAt = null;
+}
+
+/** Runs every minute: ask sellers about items listed/confirmed 14+ days ago; pause if no answer in 3 days. */
+async function stillAvailableSweep(now: number): Promise<void> {
+  for (const l of listings.values()) {
+    if (l.kind !== "item" || !l.active || l.sold || l.sample) continue;
+    if (l.stillAskedAt) {
+      if (now - l.stillAskedAt > STILL_WAIT_MS) {
+        l.active = false;
+        l.autoPaused = true;
+        l.stillAskedAt = null;
+        track("listing_auto_paused", l.owner, { category: l.category });
+        await wa.sendButtons(l.owner, `⏸ We paused *${fit(l.title, 50)}* (${l.id}) because we didn't hear back. Buyers won't see it.\n\nStill selling it? Tap *Resume*.`, [
+          { id: `resume:${l.id}`, title: "▶️ Resume" },
+          { id: "menu:main", title: "Main menu" },
+        ]);
+      }
+      continue;
+    }
+    if (now - (l.confirmedAt ?? l.createdAt) < STILL_EVERY_MS) continue;
+    l.stillAskedAt = now;
+    track("still_available_asked", l.owner, { category: l.category });
+    await wa.sendButtons(l.owner, `👋 Is your *${fit(l.title, 50)}* (${l.id}, ${priceLabel(l)}) still for sale?\n\nIf we don't hear back in 3 days, we'll pause it so buyers don't waste a trip.`, [
+      { id: `still:yes:${l.id}`, title: "✅ Still for sale" },
+      { id: `still:price:${l.id}`, title: "💲 New price" },
+      { id: `still:sold:${l.id}`, title: "🏷️ It's sold" },
+    ]);
+  }
+}
+
+/** Simulator only (SAMPLE_PROVIDERS=true): pretend a listing is `days` older, then run the sweep. */
+export async function testAgeListing(id: string, days: number): Promise<boolean> {
+  if (!env.SAMPLE_PROVIDERS) return false;
+  const l = listings.get(id);
+  if (!l) return false;
+  const shift = days * 24 * 3600_000;
+  l.createdAt -= shift;
+  if (l.confirmedAt) l.confirmedAt -= shift;
+  if (l.stillAskedAt) l.stillAskedAt -= shift;
+  await stillAvailableSweep(Date.now());
+  return true;
+}
+
+async function stillAnswer(u: User, listingId: string, answer: "yes" | "price" | "sold"): Promise<void> {
+  const l = listings.get(listingId);
+  if (!l || l.owner !== u.phone) return didntGetThat(u);
+  if (answer === "sold") return markSold(u, listingId);
+  if (l.sold) return anythingElse(u.phone, `${l.id} is already marked as sold.`);
+  if (l.adminPaused) return anythingElse(u.phone, `This listing was paused by the ${env.APP_NAME} team. Contact us if you think this is a mistake.`);
+  if (answer === "price") {
+    u.step = "STILL_PRICE";
+    u.draft = { listingId };
+    return void (await prompt(u, () => wa.sendText(u.phone, `What's the new price for *${fit(l.title, 50)}*? Type it in US dollars, e.g. *250*.`)));
+  }
+  confirmStill(l);
+  if (!l.active && l.autoPaused) {
+    l.active = true;
+    l.autoPaused = false;
+  }
+  track("still_available_yes", u.phone, {});
+  return anythingElse(u.phone, `✅ Thanks! *${fit(l.title, 40)}* stays live for another 14 days.`);
 }
 
 // ---------------------------------------------------------------- the 24-hour window: hold, notify, deliver
@@ -1723,6 +1855,7 @@ async function showMenu(u: User, greeting: string): Promise<void> {
         { id: "menu:ads", title: "📣 Advertise", description: "Show your business in search results." },
         { id: "menu:city", title: "Change my town", description: `Now: ${cityName(u.city)}` },
         { id: "menu:help", title: "How it works" },
+        { id: "menu:support", title: "💬 Talk to a person", description: "Stuck or have a question? Our team replies here." },
       ],
       env.APP_NAME,
     ),
@@ -2782,6 +2915,10 @@ async function toggleListing(u: User, listingId: string, on: boolean): Promise<v
     return void (await wa.sendText(u.phone, `You already have ${MAX_ACTIVE_LISTINGS} live listings. Pause another one first.`));
   }
   l.active = on;
+  if (on) {
+    l.autoPaused = false;
+    confirmStill(l);
+  }
   return showMenu(u, on ? `✅ ${l.id} is live again.` : `⏸ ${l.id} is paused. Buyers won't see it.`);
 }
 
@@ -3076,6 +3213,17 @@ async function adminCommand(to: string, text: string): Promise<void> {
       await tell(phone, `✅ You're now a verified seller on ${env.APP_NAME}. Your listings show the ✅ badge.`);
       return;
     }
+    case "reply": {
+      const phone = toIntl(arg1);
+      const answer = text.trim().replace(/^reply\s+\S+\s*/i, "").trim();
+      if (!phone || !users.get(phone) || !answer) return void (await wa.sendText(to, "Use: REPLY 0771234567 your answer"));
+      await wa.sendButtons(phone, `💬 *${env.APP_NAME} team:*\n${fit(answer, 900)}`, [
+        { id: "support:new", title: "💬 Reply to team" },
+        { id: "menu:main", title: "Main menu" },
+      ]);
+      track("support_replied", phone, {});
+      return void (await wa.sendText(to, `✅ Sent to ${nameOf(phone)} (${prettyPhone(phone)}).`));
+    }
     case "ban":
     case "unban": {
       const phone = toIntl(arg1);
@@ -3218,6 +3366,7 @@ setInterval(() => {
       void closeNeed(need, "EXPIRED").then(() => wa.sendText(need.owner, `Your post "${fit(need.text, 50)}" has expired after ${NEED_TTL_DAYS} days. Type MENU to post it again.`));
     }
   }
+  void stillAvailableSweep(now);
   // Monday price reminder for shops (from 8am Harare). Free-form messages only reach people who
   // messaged in the last 24 hours, so the others get it next time a template is approved.
   const harare = new Date(now + 2 * 3600_000);
