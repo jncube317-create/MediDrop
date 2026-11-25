@@ -76,7 +76,7 @@ type Step =
   | "CAT_KIND" | "CAT_PICK"
   | "FIND_TEXT" | "FIND_BUDGET" | "FIND_WHEN" | "FIND_DATE" | "FIND_WHERE" | "FIND_CONFIRM"
   | "SELL_TITLE" | "SELL_MILEAGE" | "SELL_DESC" | "SELL_COND" | "SELL_PRICE" | "SELL_PHOTOS" | "SELL_COVER" | "SELL_CONFIRM"
-  | "QUOTE_TEXT" | "PHARM_DETAILS" | "SHOP_DETAILS" | "SHOP_HOURS" | "SHOP_AREA" | "SHOP_PRICES"
+  | "QUOTE_TEXT" | "PHARM_DETAILS" | "SHOP_DETAILS" | "SHOP_KIND" | "SHOP_HOURS" | "SHOP_AREA" | "SHOP_PRICES"
   | "AD_TEXT" | "AD_PHOTO" | "AD_WHERE" | "AD_CONFIRM"
   | "BUY_PAYER" | "BUY_OTHER_NUMBER" | "BUY_WAIT";
 
@@ -120,9 +120,10 @@ interface User {
   verified: boolean;
   pharmacy?: { details: string; approvedAt: number } | null; // licensed pharmacy, approved by admin
   pharmacyApplication?: string | null;
-  shop?: { name: string; details: string; area?: ShopArea; approvedAt: number } | null; // approved shop: sends prices
+  shop?: { name: string; details: string; area?: ShopArea; kind?: ShopKind; approvedAt: number } | null; // approved shop: sends prices
   shopApplication?: string | null; // shop name while applying
   shopHours?: string | null; // opening hours while applying
+  shopKind?: ShopKind | null; // grocery or spares shop, while applying
   heldPrices?: { name: string; cents: number; at: number }[]; // prices for products not on the list yet
   shopArea?: ShopArea | null; // area picked while applying (no street address is ever stored)
   shopReminded?: string; // week of the last "update your prices" reminder
@@ -638,7 +639,8 @@ async function conversation(m: Incoming): Promise<void> {
   if (/^shop$/i.test(text)) return askShopDetails(u);
   if (/^prices?$/i.test(text) && u.shop) return askShopPrices(u);
   // An approved shop pasting several "product price" lines = a price update, wherever they are.
-  if (u.shop && m.kind === "text" && text.split(/\n/).filter((l) => parsePriceLine(l)).length >= 2) return updateShopPrices(u, text.split(/\n/));
+  if (u.shop && m.kind === "text" && (text.split(/\n/).filter((l) => parsePriceLine(l)).length >= 2 || text.split(/\n/).filter((l) => /=/.test(l)).length >= 2))
+    return updateShopPrices(u, text.split(/\n/));
   if (m.kind === "document") {
     if (u.shop) return updateShopPricesFromFile(u, m.mediaId, m.filename, m.mime);
     return void (await wa.sendText(to, "Thanks! Files are only used for shop price lists. Type SHOP if you'd like to list your shop's prices."));
@@ -697,6 +699,11 @@ async function conversation(m: Incoming): Promise<void> {
 
   if (id.startsWith("buy:")) return startBuy(u, id.slice(4));
   if (id.startsWith("edit:menu:")) return editMenu(u, id.slice(10));
+  if (id.startsWith("shopkind:") && u.step === "SHOP_KIND" && SHOP_KINDS[id.slice(9) as ShopKind]) {
+    u.shopKind = id.slice(9) as ShopKind;
+    u.step = "SHOP_HOURS";
+    return void (await prompt(u, () => wa.sendText(u.phone, `*Step 3 of 4:* What are *${u.shopApplication ?? "your shop"}*'s opening hours?\n\nFor example: _Mon to Sat 7am to 8pm, Sun 8am to 1pm_`)));
+  }
   if (id.startsWith("shoparea:") && u.step === "SHOP_AREA" && SHOP_AREAS[id.slice(9) as ShopArea]) return submitShop(u, id.slice(9) as ShopArea);
   if (id.startsWith("cmp:p:")) return showProductPrices(u, id.slice(6));
   if (id.startsWith("cmp:shops:")) return listProductShops(u, id.slice(10));
@@ -755,8 +762,11 @@ async function conversation(m: Incoming): Promise<void> {
       const name = clean(text, 40);
       if (name.length < 3) return void (await wa.sendText(to, "What's your shop called? Just the name, e.g. _Tino's Superette_."));
       u.shopApplication = name;
-      u.step = "SHOP_HOURS";
-      return void (await prompt(u, () => wa.sendText(to, `Thanks. What are *${name}*'s opening hours?\n\nFor example: _Mon to Sat 7am to 8pm, Sun 8am to 1pm_`)));
+      u.step = "SHOP_KIND";
+      return void (await askShopKind(u));
+    }
+    case "SHOP_KIND": {
+      return void (await askShopKind(u));
     }
     case "SHOP_HOURS": {
       if (text.length < 3) return void (await wa.sendText(to, "Please send your opening hours, e.g. _Mon to Sat 7am to 8pm_."));
@@ -1209,6 +1219,8 @@ function tidyShopData(): void {
 
 /** Shops only say which area they're in. No street address is asked for, stored or shown. */
 type ShopArea = "cbd" | "subs" | "out";
+type ShopKind = "groceries" | "carparts";
+const SHOP_KINDS: Record<ShopKind, string> = { groceries: "Grocery shop", carparts: "Car spares shop" };
 const SHOP_AREAS: Record<ShopArea, string> = { cbd: "Bulawayo CBD", subs: "Bulawayo suburbs", out: "Outside Bulawayo" };
 
 function textOf_rest(t: string): string {
@@ -1281,9 +1293,18 @@ async function adminProductPhoto(admin: string, mediaId: string, caption: string
   if (p) await releaseHeldPrices(admin, p);
 }
 
+async function askShopKind(u: User): Promise<void> {
+  await prompt(u, () =>
+    wa.sendButtons(u.phone, "*Step 2 of 4:* What kind of shop is it?", [
+      { id: "shopkind:groceries", title: "🛒 Grocery shop" },
+      { id: "shopkind:carparts", title: "🔧 Car spares shop" },
+    ]),
+  );
+}
+
 async function askShopArea(u: User): Promise<void> {
   await prompt(u, () =>
-    wa.sendButtons(u.phone, "*Step 3 of 3:* Where is your shop?", (Object.keys(SHOP_AREAS) as ShopArea[]).map((k) => ({ id: `shoparea:${k}`, title: SHOP_AREAS[k] }))),
+    wa.sendButtons(u.phone, "*Step 4 of 4:* Where is your shop?", (Object.keys(SHOP_AREAS) as ShopArea[]).map((k) => ({ id: `shoparea:${k}`, title: SHOP_AREAS[k] }))),
   );
 }
 
@@ -1293,7 +1314,7 @@ async function submitShop(u: User, area: ShopArea): Promise<void> {
   track("shop_applied", u.phone, { area });
   await wa.sendText(u.phone, "Thank you 🙏 We'll check your shop and reply here, usually within a day.");
   if (env.ADMIN_PHONE)
-    await wa.sendButtons(env.ADMIN_PHONE, `🏪 *Shop application*\nFrom: ${nameOf(u.phone)} ${prettyPhone(u.phone)}\n🏪 ${u.shopApplication ?? ""}\n🕒 ${u.shopHours ?? ""}\n📍 ${SHOP_AREAS[area]}`, [
+    await wa.sendButtons(env.ADMIN_PHONE, `🏪 *Shop application*\nFrom: ${nameOf(u.phone)} ${prettyPhone(u.phone)}\n🏪 ${u.shopApplication ?? ""} (${SHOP_KINDS[u.shopKind ?? "groceries"]})\n🕒 ${u.shopHours ?? ""}\n📍 ${SHOP_AREAS[area]}`, [
       { id: `shop:ok:${u.phone}`, title: "Approve" },
       { id: `shop:no:${u.phone}`, title: "Reject" },
     ]);
@@ -1305,7 +1326,7 @@ async function askShopDetails(u: User): Promise<void> {
   await prompt(u, () =>
     wa.sendText(
       u.phone,
-      "🏪 *List your shop's prices on Scoutly*\n\nShoppers comparing prices will see your shop name, area (e.g. Bulawayo CBD), opening hours and WhatsApp number. We never show a street address. You only send prices; we supply the product photos.\n\n*Step 1 of 3:* What's your shop called? Just the name.",
+      "🏪 *List your shop's prices on Scoutly*\n\nShoppers comparing prices will see your shop name, area (e.g. Bulawayo CBD), opening hours and WhatsApp number. We never show a street address. You only send prices; we supply the product photos.\n\n*Step 1 of 4:* What's your shop called? Just the name.",
     ),
   );
 }
@@ -1317,32 +1338,61 @@ async function reviewShop(admin: string, phone: string, approve: boolean): Promi
     const name = clean(p.shopApplication ?? p.shop?.name ?? p.profile?.name ?? p.name ?? "Shop", 40);
     const details = p.shopHours ?? p.shop?.details ?? "";
     const area = p.shopArea ?? p.shop?.area;
-    p.shop = { name, details, ...(area ? { area } : {}), approvedAt: Date.now() };
+    const kind = p.shopKind ?? p.shop?.kind ?? "groceries";
+    p.shop = { name, details, kind, ...(area ? { area } : {}), approvedAt: Date.now() };
     track("shop_approved", phone, {});
     await wa.sendText(admin, `✅ ${name} is now a shop.`);
-    await tell(phone, `✅ *${name}* is approved as a shop on ${env.APP_NAME}.\n\n${PRICE_HELP}`);
+    await tell(phone, `✅ *${name}* is approved as a shop on ${env.APP_NAME}.`);
+    await sendPriceList(p);
   } else {
     await wa.sendText(admin, `Rejected ${nameOf(phone)}'s shop application.`);
     await tell(phone, "Sorry, we couldn't approve your shop yet. Reply SHOP to apply again.");
   }
   p.shopApplication = null;
   p.shopHours = null;
+  p.shopKind = null;
   p.shopArea = null;
 }
 
 const PRICE_HELP =
-  "📋 *How to send prices*\nType one product per line, then the price:\n_Olivine cooking oil 2L 3.80_\n_Gold Leaf mealie meal 10kg 7.50_\n\nOr send your price list as a spreadsheet (Excel or CSV): product in one column, price in the next.\n\nSend new prices any time. We'll remind you every Monday. Type PRICES to see this again.";
+  "📋 *How to send prices*\nType PRICES and we'll send your price list. Copy it, put your price after the = for what you sell, and send it back. Leave the rest blank.\n\nSelling something that's not on the list? Type it on its own line with the size and price:\n_Olivine cooking oil 2L 3.80_\n\nWe'll remind you every Monday.";
+
+const LIST_CHUNK = 40; // products per message, so the list stays easy to copy on a phone
+
+/** Products a shop prices: its kind's products, in a stable order (sorted by name). */
+function listFor(shop: User): Product[] {
+  const kind = shop.shop?.kind ?? "groceries";
+  return [...products.values()].filter((p) => p.category === kind).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Sends the shop's price list: instructions, then the list on its own (easy to copy), last prices filled in. */
+async function sendPriceList(u: User): Promise<void> {
+  u.step = "SHOP_PRICES";
+  const list = listFor(u);
+  if (!list.length) return void (await wa.sendText(u.phone, `📋 Your price list is still being set up. We'll message you when it's ready.\n\nFor now you can type prices, one per line:\n_Olivine cooking oil 2L 3.80_`));
+  await wa.sendText(
+    u.phone,
+    `📋 *Your price list* (${list.length} product${list.length === 1 ? "" : "s"})\n\n1. Press and hold the list below, then tap *Copy*.\n2. Paste it in a new message.\n3. Put your price after the *=* for what you sell. Leave the rest blank.\n4. Send it.\n\nYour last prices are already filled in, so just change what moved.`,
+  );
+  for (let i = 0; i < list.length; i += LIST_CHUNK) {
+    const part = list.slice(i, i + LIST_CHUNK).map((p) => {
+      const mine = p.prices[u.phone];
+      return `${p.name} = ${mine ? (mine.cents / 100).toFixed(2) : ""}`.trimEnd();
+    });
+    await wa.sendText(u.phone, part.join("\n"));
+  }
+}
 
 async function askShopPrices(u: User): Promise<void> {
-  u.step = "SHOP_PRICES";
-  await prompt(u, () => wa.sendText(u.phone, PRICE_HELP));
+  return sendPriceList(u);
 }
 
 async function updateShopPrices(u: User, lines: string[]): Promise<void> {
   if (!u.shop) return askShopDetails(u);
-  const rows = lines.map((l) => l.trim()).filter(Boolean).map((l) => parsePriceLine(l));
+  // "Mazoe Orange Crush 2 litre =" with no price = they don't sell it: skip quietly.
+  const rows = lines.map((l) => l.trim()).filter((l) => l && !/=\s*$/.test(l) && !/=\s*[-–x0]?\s*$/i.test(l)).map((l) => parsePriceLine(l));
   const good = rows.filter((r): r is { name: string; cents: number } => r !== null);
-  if (!good.length) return void (await wa.sendText(u.phone, `I couldn't find any prices there.\n\n${PRICE_HELP}`));
+  if (!good.length) return void (await wa.sendText(u.phone, `I couldn't find any prices there. Put your price after the *=*, like _Mazoe Orange Crush 2 litre = 3.50_, then send it again.`));
   return reportPrices(u, applyPrices(u.phone, good, products.values()), rows.length - good.length);
 }
 
@@ -1407,6 +1457,7 @@ async function showComparison(u: User, hits: Product[]): Promise<void> {
     };
   });
   await sendCards(u.phone, `💲 ${hits.length} products for *${fit(subjectOf(u.draft.text ?? ""), 40)}*. Swipe, then tap *Compare prices* 👉`, cards, hits.map((p) => ({ id: `cmp:p:${p.id}`, title: fit(p.name, 24), description: `From ${formatUsd(livePrices(p)[0]!.cents)} · ${livePrices(p).length} shops` })));
+  if (hits.every((p) => p.category === "groceries")) return;
   await wa.sendButtons(u.phone, "Not what you need? We can also ask sellers for you.", [
     { id: "cmp:post", title: "🔎 Ask sellers too" },
     { id: "menu:main", title: "Main menu" },
@@ -1425,7 +1476,8 @@ async function showProductPrices(u: User, productId: string): Promise<void> {
     fit(`*${p.name}*\n\n${top.join("\n")}${saving}\n\n${live.some((x) => x.stale) ? "⚠️ = price older than 2 weeks. " : ""}Prices come from the shops; confirm in store.`, 1000),
     [
       { id: `cmp:shops:${p.id}`, title: "🏪 Shop details" },
-      { id: "cmp:post", title: "🔎 Ask sellers too" },
+      // Nobody privately sells one bottle of Mazoe, so groceries skip "Ask sellers too" (spares keep it).
+      ...(p.category === "groceries" ? [] : [{ id: "cmp:post", title: "🔎 Ask sellers too" }]),
       { id: "menu:main", title: "Main menu" },
     ],
     { imageUrl: productImage(p) },
@@ -2965,7 +3017,7 @@ setInterval(() => {
       if (!shop.shop || shop.shopReminded === week) continue;
       shop.shopReminded = week;
       if (!shop.lastIn || now - shop.lastIn > 23 * 3600_000) continue;
-      void tell(shop.phone, `🏪 Good morning ${shop.shop.name}! Please send this week's prices so shoppers find you. Type PRICES for how.`);
+      void tell(shop.phone, `🏪 Good morning ${shop.shop.name}! Please update this week's prices so shoppers find you. Type PRICES to get your list.`);
     }
   }
 }, 60 * 1000).unref();
