@@ -509,19 +509,30 @@ async function main(): Promise<void> {
     await onboard(SHOP1, "Mai Tino");
     r = await send(SHOP1, { text: "SHOP" });
     check(has(r, SHOP1, /List your shop's prices[\s\S]*WhatsApp number[\s\S]*never show a street address[\s\S]*we supply the product photos/), "SHOP explains the deal: prices only, number shown, no address");
-    r = await send(SHOP1, { text: "Tino's Superette, open 7am to 8pm daily" });
+    r = await send(SHOP1, { text: "Tino's Superette" });
+    check(has(r, SHOP1, /opening hours/), "shop name and hours are asked separately");
+    r = await send(SHOP1, { text: "open 7am to 8pm daily" });
     check(has(r, SHOP1, /Where is your shop/) && has(r, SHOP1, /shoparea:cbd "Bulawayo CBD"/) && has(r, SHOP1, /shoparea:out "Outside Bulawayo"/), "shop picks an area instead of an address");
     r = await send(SHOP1, { reply: "shoparea:subs" });
-    check(has(r, SHOP1, /check your shop/) && has(r, ADMIN, /Shop application[\s\S]*📍 Bulawayo suburbs/), "shop application (with area) goes to admin");
+    check(has(r, SHOP1, /check your shop/) && has(r, ADMIN, /Shop application[\s\S]*🏪 Tino's Superette\n🕒 open 7am to 8pm daily\n📍 Bulawayo suburbs/), "shop application (with area) goes to admin");
     r = await send(ADMIN, { reply: option(r, ADMIN, /^shop:ok:\d+/) });
     check(has(r, SHOP1, /Tino's Superette\* is approved[\s\S]*How to send prices/), "approved shop is told how to send prices");
-    r = await send(SHOP1, { text: "Olivine cooking oil 2L 3.80\nGold leaf mealie meal 10kg - $7.20\nMazoe orange 2L 4.50" });
-    check(has(r, SHOP1, /2 prices updated[\s\S]*\$3\.80[\s\S]*Not in our product list yet[\s\S]*Mazoe orange 2L/), "typed price list updates prices and lists unknown items");
-    check(has(r, ADMIN, /Tino's Superette\* sent prices for products not in the list[\s\S]*Mazoe/), "admin is told which products to add");
+    r = await send(SHOP1, { text: "Olivine cooking oil 2L 3.80\nGold leaf mealie meal 10kg - $7.20\nMazoe orange crush 2L 4.50\nGold leaf mealie meal 6.10" });
+    check(has(r, SHOP1, /2 prices updated[\s\S]*\$3\.80[\s\S]*add the size[\s\S]*Gold Leaf mealie meal 10kg 6\.10[\s\S]*Waiting for Scoutly to add[\s\S]*Mazoe orange crush 2L/), "typed prices: updated, size asked for, unknown items held");
+    check(has(r, ADMIN, /Tino's Superette\* sent prices for products not in the list[\s\S]*Mazoe[\s\S]*ADD Mazoe orange crush 2L/) && !has(r, ADMIN, /<name>/), "admin is told which products to add, with a real example");
+    r = await send(CUSTOMER, { text: "looking for mazoe orange crush 2L" });
+    check(has(r, CUSTOMER, /No shop has sent a price for[\s\S]*Alert me/) && !has(r, CUSTOMER, /Nobody is selling|menu:credits/), "grocery with no prices: shop wording, no credits button");
+    await send(CUSTOMER, { reply: option(r, CUSTOMER, /^alert:on:N-\d+/) });
+    r = await send(ADMIN, { image: "prodphoto3", caption: "ADD <Mazoe orange crush 2L>" });
+    check(has(r, ADMIN, /PR-004 · Mazoe orange crush 2L\*/) && !has(r, ADMIN, /PR-004 · </), "brackets are stripped from product names");
+    check(has(r, SHOP1, /Mazoe orange crush 2L\* is now on Scoutly[\s\S]*\$4\.50\* is live/) && has(r, ADMIN, /1 price shops sent earlier[\s\S]*now live/), "held price goes live when the product is added");
+    check(has(r, CUSTOMER, /A shop just sent a price for \*Mazoe orange crush 2L\*[\s\S]*\$4\.50/), "Alert me fires when a shop price goes live");
+    await send(CUSTOMER, { text: "MENU" });
 
     await onboard(SHOP2, "Baba Spares");
     await send(SHOP2, { text: "SHOP" });
-    await send(SHOP2, { text: "Spares Hub, Mon-Sat 8am-5pm" });
+    await send(SHOP2, { text: "Spares Hub" });
+    await send(SHOP2, { text: "Mon-Sat 8am-5pm" });
     await send(SHOP2, { reply: "shoparea:cbd" });
     await send(ADMIN, { text: "SHOP 0786666666" });
     r = await send(SHOP2, { doc: "prices.xlsx" });
@@ -543,7 +554,7 @@ async function main(): Promise<void> {
     check(!has(r, CUSTOMER, /Brake pads/), "a car search doesn't show spare-part prices");
     await send(CUSTOMER, { text: "MENU" });
     r = await send(ADMIN, { text: "STATS" });
-    check(has(r, ADMIN, /Products: 3 \(0 without a photo\)|Products: 3 \(1 without a photo\)/) && has(r, ADMIN, /Shops: 2/), "STATS counts products and shops");
+    check(has(r, ADMIN, /Products: 4 \(1 without a photo\)/) && has(r, ADMIN, /Shops: 2/), "STATS counts products and shops");
     await send(ADMIN, { text: "MENU" });
 
     // ---- How it works explains credits and number-sharing consent

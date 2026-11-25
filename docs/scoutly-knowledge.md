@@ -164,6 +164,7 @@ Automatic admin alerts: blocked posts, medicine listing attempts, reports, new a
 | 20–21 Nov | Bundles **$1 = 2, $3 = 7, $5 = 13** credits; **3 free credits every week** (stacking) |
 | 21 Nov | **One-message search** (tester feedback: too many steps, compare with Facebook Marketplace) |
 | 21 Nov | Swap message shows the key facts; chat link pre-types a Scoutly hello; "today" and "this week" posts close when their time passes |
+| 25 Nov | Fixes from Zolile's phone test: shop name and hours asked separately; brackets stripped from product names; prices for products not yet listed are **held and go live automatically** when the admin adds the product; missing sizes get a "please add the size" reply; grocery/spares searches with no prices say "No shop has sent a price yet" and **Alert me** fires when a price goes live |
 | 24 Nov | Shops give an **area only** (CBD / suburbs / outside Bulawayo), never a street address, so no location leaks |
 | 24 Nov | **Shop price comparison built** for groceries and motor spares (see section 2). Shop contact is **free** for shoppers; shops are **free** at first (charge later for featured spots); shops' numbers are public with their consent |
 | 23 Nov | Search understands **brands** (Nike, Adidas, Samsung, HP, Defy, Hisense…), **singular/plural** (shoe = shoes) and **typos** (niker → Nike, samsang → Samsung), so most searches skip the category question |

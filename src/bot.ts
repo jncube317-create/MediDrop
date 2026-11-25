@@ -56,7 +56,7 @@ import { track } from "./analytics";
 import { demoPhoto, savePhoto, downloadMedia } from "./media";
 import { dbEnabled, loadTable, upsert, type CreditRow, type Row } from "./store";
 import { understand, subjectOf } from "./parse";
-import { type Product, searchProducts, livePrices, ageLabel, parsePriceLine, applyPrices, productCategory, bestProduct } from "./catalog";
+import { type Product, searchProducts, livePrices, ageLabel, parsePriceLine, applyPrices, productCategory, bestProduct, sizeHint, cleanProductName } from "./catalog";
 import { readPriceSheet } from "./sheet";
 import type { CarouselCard } from "./limits";
 
@@ -76,7 +76,7 @@ type Step =
   | "CAT_KIND" | "CAT_PICK"
   | "FIND_TEXT" | "FIND_BUDGET" | "FIND_WHEN" | "FIND_DATE" | "FIND_WHERE" | "FIND_CONFIRM"
   | "SELL_TITLE" | "SELL_MILEAGE" | "SELL_DESC" | "SELL_COND" | "SELL_PRICE" | "SELL_PHOTOS" | "SELL_COVER" | "SELL_CONFIRM"
-  | "QUOTE_TEXT" | "PHARM_DETAILS" | "SHOP_DETAILS" | "SHOP_AREA" | "SHOP_PRICES"
+  | "QUOTE_TEXT" | "PHARM_DETAILS" | "SHOP_DETAILS" | "SHOP_HOURS" | "SHOP_AREA" | "SHOP_PRICES"
   | "AD_TEXT" | "AD_PHOTO" | "AD_WHERE" | "AD_CONFIRM"
   | "BUY_PAYER" | "BUY_OTHER_NUMBER" | "BUY_WAIT";
 
@@ -121,7 +121,9 @@ interface User {
   pharmacy?: { details: string; approvedAt: number } | null; // licensed pharmacy, approved by admin
   pharmacyApplication?: string | null;
   shop?: { name: string; details: string; area?: ShopArea; approvedAt: number } | null; // approved shop: sends prices
-  shopApplication?: string | null;
+  shopApplication?: string | null; // shop name while applying
+  shopHours?: string | null; // opening hours while applying
+  heldPrices?: { name: string; cents: number; at: number }[]; // prices for products not on the list yet
   shopArea?: ShopArea | null; // area picked while applying (no street address is ever stored)
   shopReminded?: string; // week of the last "update your prices" reminder
   lastIn?: number; // when they last messaged us (WhatsApp only allows free-form replies for 24h)
@@ -155,6 +157,7 @@ interface Need {
   status: "OPEN" | "CLOSED" | "EXPIRED";
   connections: number;
   understood?: boolean; // false = the bot had to ask for the category (words to add to the list)
+  priceAlerted?: string[]; // products this search was already alerted about
 }
 
 interface Listing {
@@ -301,6 +304,7 @@ export async function initState(): Promise<void> {
     adSeq = Math.max(adSeq, saved.adSeq ?? 0, maxNum(ads.keys()));
     purchaseSeq = Math.max(purchaseSeq, saved.purchaseSeq ?? 0, maxNum(purchases.keys()));
     productSeq = Math.max(productSeq, saved.productSeq ?? 0, maxNum(products.keys()));
+    tidyShopData();
     console.log(`[DB] Loaded ${users.size} users, ${needs.size} posts, ${listings.size} listings, ${leads.size} leads, ${savedEntries} credit entries.`);
     setInterval(() => void flushState(), 2000).unref();
   } else {
@@ -748,8 +752,15 @@ async function conversation(m: Incoming): Promise<void> {
 
     // ---- shops
     case "SHOP_DETAILS": {
-      if (text.length < 8) return void (await wa.sendText(to, "Please send your shop name and opening hours in one message, e.g. _Tino's Superette, open 7am to 8pm daily_."));
-      u.shopApplication = clean(text, 200);
+      const name = clean(text, 40);
+      if (name.length < 3) return void (await wa.sendText(to, "What's your shop called? Just the name, e.g. _Tino's Superette_."));
+      u.shopApplication = name;
+      u.step = "SHOP_HOURS";
+      return void (await prompt(u, () => wa.sendText(to, `Thanks. What are *${name}*'s opening hours?\n\nFor example: _Mon to Sat 7am to 8pm, Sun 8am to 1pm_`)));
+    }
+    case "SHOP_HOURS": {
+      if (text.length < 3) return void (await wa.sendText(to, "Please send your opening hours, e.g. _Mon to Sat 7am to 8pm_."));
+      u.shopHours = clean(text, 120);
       u.step = "SHOP_AREA";
       return void (await askShopArea(u));
     }
@@ -1183,6 +1194,19 @@ async function reviewPharmacy(admin: string, phone: string, approve: boolean): P
 
 // ---------------------------------------------------------------- shops and price comparison
 
+/** One-off clean-up of early test data: brackets in product names, opening hours typed into a shop name. */
+function tidyShopData(): void {
+  for (const p of products.values()) p.name = cleanProductName(p.name);
+  for (const u of users.values()) {
+    if (!u.shop) continue;
+    const m = u.shop.name.match(/^(.*?)\s+((?:open\s+)?\d{1,2}(?:[.:]\d{2})?\s*(?:am|pm)\b.*)$/i);
+    if (m?.[1] && m[2]) {
+      u.shop.name = m[1].trim();
+      if (!u.shop.details || u.shop.details.toLowerCase().startsWith(m[1].toLowerCase())) u.shop.details = m[2].trim();
+    }
+  }
+}
+
 /** Shops only say which area they're in. No street address is asked for, stored or shown. */
 type ShopArea = "cbd" | "subs" | "out";
 const SHOP_AREAS: Record<ShopArea, string> = { cbd: "Bulawayo CBD", subs: "Bulawayo suburbs", out: "Outside Bulawayo" };
@@ -1194,7 +1218,7 @@ function textOf_rest(t: string): string {
 /** "Olivine cooking oil 2L" or "Brake pads front Hilux | carparts". Same name again = same product. */
 function addProduct(raw: string, photo: string | null): Product | null {
   const [namePart, catPart] = raw.split("|").map((x) => x.trim());
-  const name = clean(namePart ?? "", 80);
+  const name = cleanProductName(clean(namePart ?? "", 80));
   if (name.length < 3) return null;
   const existing = bestProduct(name, products.values(), 0.99);
   if (existing && existing.name.toLowerCase() === name.toLowerCase()) {
@@ -1205,6 +1229,41 @@ function addProduct(raw: string, photo: string | null): Product | null {
   const p: Product = { id: `PR-${String(++productSeq).padStart(3, "0")}`, name, category: cat, photo, prices: {}, createdAt: Date.now() };
   products.set(p.id, p);
   return p;
+}
+
+/** A new product goes live with every price shops already sent for it; shops that left out the size are asked for it. */
+/** People with "Alert me" on a grocery/spares search hear when a shop price for it goes live. */
+async function priceAlerts(changed: Product[]): Promise<void> {
+  for (const need of needs.values()) {
+    if (!need.alert || need.status !== "OPEN") continue;
+    for (const p of changed) {
+      if (need.category !== p.category || need.priceAlerted?.includes(p.id)) continue;
+      if (!searchProducts(need.text, [p]).length || !livePrices(p).length) continue;
+      need.priceAlerted = [...(need.priceAlerted ?? []), p.id];
+      const best = livePrices(p)[0]!;
+      await wa.sendButtons(need.owner, `🔔 A shop just sent a price for *${p.name}*: from *${formatUsd(best.cents)}*.`, [{ id: `cmp:p:${p.id}`, title: "Compare prices" }]);
+    }
+  }
+}
+
+async function releaseHeldPrices(admin: string, p: Product): Promise<void> {
+  let live = 0;
+  for (const shop of users.values()) {
+    if (!shop.shop || !shop.heldPrices?.length) continue;
+    const keep: NonNullable<User["heldPrices"]> = [];
+    for (const h of shop.heldPrices) {
+      if (bestProduct(h.name, [p])) {
+        p.prices[shop.phone] = { cents: h.cents, at: h.at };
+        live += 1;
+        await tell(shop.phone, `✅ *${p.name}* is now on Scoutly, so your price of *${formatUsd(h.cents)}* is live for shoppers.`);
+      } else if (sizeHint(h.name, [p])) {
+        await tell(shop.phone, `📏 *${p.name}* is now on Scoutly. Please send your price again *with the size*, e.g.\n_${p.name} ${(h.cents / 100).toFixed(2)}_`);
+      } else keep.push(h);
+    }
+    shop.heldPrices = keep;
+  }
+  if (live) await priceAlerts([p]);
+  if (live) await wa.sendText(admin, `${live} price${live === 1 ? "" : "s"} shops sent earlier for ${p.name} ${live === 1 ? "is" : "are"} now live.`);
 }
 
 async function adminProductPhoto(admin: string, mediaId: string, caption: string): Promise<void> {
@@ -1218,12 +1277,13 @@ async function adminProductPhoto(admin: string, mediaId: string, caption: string
     return void (await wa.sendText(admin, `✅ New photo for *${p.id} · ${p.name}*.`));
   }
   const p = addProduct(caption.replace(/^\s*add\s*/i, ""), link);
-  await wa.sendText(admin, p ? `✅ *${p.id} · ${p.name}* (${catName(p.category)}) is in the product list with your photo. Shops can now send prices for it.` : "Use the caption: ADD Olivine cooking oil 2L");
+  await wa.sendText(admin, p ? `✅ *${p.id} · ${p.name}* (${catName(p.category)}) is in the product list with your photo. Shops can now send prices for it.` : "Use the caption: ADD Mazoe orange crush 2L");
+  if (p) await releaseHeldPrices(admin, p);
 }
 
 async function askShopArea(u: User): Promise<void> {
   await prompt(u, () =>
-    wa.sendButtons(u.phone, "Where is your shop?", (Object.keys(SHOP_AREAS) as ShopArea[]).map((k) => ({ id: `shoparea:${k}`, title: SHOP_AREAS[k] }))),
+    wa.sendButtons(u.phone, "*Step 3 of 3:* Where is your shop?", (Object.keys(SHOP_AREAS) as ShopArea[]).map((k) => ({ id: `shoparea:${k}`, title: SHOP_AREAS[k] }))),
   );
 }
 
@@ -1233,20 +1293,19 @@ async function submitShop(u: User, area: ShopArea): Promise<void> {
   track("shop_applied", u.phone, { area });
   await wa.sendText(u.phone, "Thank you 🙏 We'll check your shop and reply here, usually within a day.");
   if (env.ADMIN_PHONE)
-    await wa.sendButtons(env.ADMIN_PHONE, `🏪 *Shop application*\nFrom: ${nameOf(u.phone)} ${prettyPhone(u.phone)}\n📍 ${SHOP_AREAS[area]}\n\n"${u.shopApplication ?? ""}"`, [
+    await wa.sendButtons(env.ADMIN_PHONE, `🏪 *Shop application*\nFrom: ${nameOf(u.phone)} ${prettyPhone(u.phone)}\n🏪 ${u.shopApplication ?? ""}\n🕒 ${u.shopHours ?? ""}\n📍 ${SHOP_AREAS[area]}`, [
       { id: `shop:ok:${u.phone}`, title: "Approve" },
       { id: `shop:no:${u.phone}`, title: "Reject" },
     ]);
 }
 
 async function askShopDetails(u: User): Promise<void> {
-  if (u.shop) return askShopPrices(u);
   u.draft = {};
   u.step = "SHOP_DETAILS";
   await prompt(u, () =>
     wa.sendText(
       u.phone,
-      "🏪 *List your shop's prices on Scoutly*\n\nShoppers comparing prices will see your shop name, area (e.g. Bulawayo CBD), opening hours and WhatsApp number. We never show a street address. You only send prices; we supply the product photos.\n\nSend in *one message*:\n1. Shop name\n2. Opening hours\n\n_Please don't type your street address._",
+      "🏪 *List your shop's prices on Scoutly*\n\nShoppers comparing prices will see your shop name, area (e.g. Bulawayo CBD), opening hours and WhatsApp number. We never show a street address. You only send prices; we supply the product photos.\n\n*Step 1 of 3:* What's your shop called? Just the name.",
     ),
   );
 }
@@ -1255,8 +1314,8 @@ async function reviewShop(admin: string, phone: string, approve: boolean): Promi
   const p = users.get(phone);
   if (!p) return void (await wa.sendText(admin, "That person hasn't messaged the bot."));
   if (approve) {
-    const details = p.shopApplication ?? p.shop?.details ?? "";
-    const name = clean(details.split(/[\n,]/)[0] ?? p.profile?.name ?? p.name ?? "Shop", 40);
+    const name = clean(p.shopApplication ?? p.shop?.name ?? p.profile?.name ?? p.name ?? "Shop", 40);
+    const details = p.shopHours ?? p.shop?.details ?? "";
     const area = p.shopArea ?? p.shop?.area;
     p.shop = { name, details, ...(area ? { area } : {}), approvedAt: Date.now() };
     track("shop_approved", phone, {});
@@ -1267,6 +1326,7 @@ async function reviewShop(admin: string, phone: string, approve: boolean): Promi
     await tell(phone, "Sorry, we couldn't approve your shop yet. Reply SHOP to apply again.");
   }
   p.shopApplication = null;
+  p.shopHours = null;
   p.shopArea = null;
 }
 
@@ -1304,19 +1364,24 @@ async function updateShopPricesFromFile(u: User, mediaId: string, filename: stri
 async function reportPrices(u: User, r: ReturnType<typeof applyPrices>, unreadable: number): Promise<void> {
   u.step = "MENU";
   track("prices_updated", u.phone, { updated: r.updated.length, unknown: r.unknown.length });
+  const now = Date.now();
+  const held = (u.heldPrices ?? []).filter((h) => !r.unknownRows.some((x) => x.name.toLowerCase() === h.name.toLowerCase()));
+  u.heldPrices = [...held, ...r.unknownRows.map((x) => ({ ...x, at: now }))].slice(-100);
   const lines = r.updated.slice(0, 12).map((x) => `• ${fit(x.product.name, 40)}: ${formatUsd(x.cents)}`);
   await wa.sendText(
     u.phone,
     [
-      `✅ *${r.updated.length} price${r.updated.length === 1 ? "" : "s"} updated* for ${u.shop?.name ?? "your shop"}.`,
-      lines.join("\n") + (r.updated.length > 12 ? `\n…and ${r.updated.length - 12} more` : ""),
-      r.unknown.length ? `❓ *Not in our product list yet* (sent to Scoutly to add, then send them again):\n${r.unknown.slice(0, 10).map((x) => `• ${x}`).join("\n")}` : "",
+      r.updated.length ? `✅ *${r.updated.length} price${r.updated.length === 1 ? "" : "s"} updated* for ${u.shop?.name ?? "your shop"}.` : "",
+      r.updated.length ? lines.join("\n") + (r.updated.length > 12 ? `\n…and ${r.updated.length - 12} more` : "") : "",
+      r.needsSize.length ? `📏 *Please add the size* and send these again:\n${r.needsSize.slice(0, 10).map((x) => `• _${x.example}_`).join("\n")}` : "",
+      r.unknown.length ? `⏳ *Waiting for Scoutly to add these products.* Your prices go live automatically once they're added, no need to send them again:\n${r.unknown.slice(0, 10).map((x) => `• ${x}`).join("\n")}` : "",
       unreadable ? `${unreadable} line${unreadable === 1 ? "" : "s"} had no price and ${unreadable === 1 ? "was" : "were"} skipped.` : "",
       "_Type MENU any time._",
     ].filter(Boolean).join("\n\n"),
   );
+  if (r.updated.length) await priceAlerts([...new Set(r.updated.map((x) => x.product))]);
   if (r.unknown.length && env.ADMIN_PHONE)
-    await wa.sendText(env.ADMIN_PHONE, `🛒 *${u.shop?.name ?? nameOf(u.phone)}* sent prices for products not in the list:\n${r.unknown.slice(0, 15).map((x) => `• ${x}`).join("\n")}\n\nAdd them with a photo and the caption *ADD <name>*.`);
+    await wa.sendText(env.ADMIN_PHONE, `🛒 *${u.shop?.name ?? nameOf(u.phone)}* sent prices for products not in the list:\n${r.unknown.slice(0, 15).map((x) => `• ${x}`).join("\n")}\n\nSend each one as a photo with a caption like:\n*ADD Mazoe orange crush 2L*\nThe shop's price goes live as soon as you add it.`);
 }
 
 function productImage(p: Product): string {
@@ -1744,6 +1809,15 @@ async function showItemCards(u: User, need: Need): Promise<void> {
 
   if (found.length === 0) {
     if (ad) await sendAdCard(u.phone, ad);
+    if (need.category === "groceries" || need.category === "carparts")
+      return void (await wa.sendButtons(
+        u.phone,
+        `🔎 ${searchLine(need)}\n\nNo shop has sent a price for *${fit(subjectOf(need.text), 50)}* yet. Tap *Alert me* and we'll message you when one does.`,
+        [
+          { id: `alert:on:${need.id}`, title: "🔔 Alert me" },
+          { id: `edit:menu:${need.id}`, title: "✏️ Edit search" },
+        ],
+      ));
     return searchOptions(
       u,
       need,
@@ -2786,7 +2860,9 @@ async function adminCommand(to: string, text: string): Promise<void> {
     }
     case "add": {
       const p = addProduct(textOf_rest(text), null);
-      return void (await wa.sendText(to, p ? `✅ Added *${p.id} · ${p.name}* (${catName(p.category)}). Send a photo with the caption *PHOTO ${p.id}* to add its picture.` : "Use: ADD Olivine cooking oil 2L"));
+      await wa.sendText(to, p ? `✅ Added *${p.id} · ${p.name}* (${catName(p.category)}). Send a photo with the caption *PHOTO ${p.id}* to add its picture.` : "Use: ADD Mazoe orange crush 2L");
+      if (p) await releaseHeldPrices(to, p);
+      return;
     }
     case "shop":
     case "unshop": {
@@ -2854,7 +2930,7 @@ async function sendStats(to: string): Promise<void> {
   const topText = [...top.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${catName(k)} (${v})`).join(", ");
   await wa.sendText(
     to,
-    `📊 *${env.APP_NAME} today*\n👥 People: ${[...users.keys()].filter((p) => !isSample(p)).length}\n🔎 Posts: ${needs.size} (${[...needs.values()].filter((n) => n.status === "OPEN").length} open)\n🔥 Top searches: ${topText || "none yet"}\n❓ Didn't understand: ${[...needs.values()].filter((n) => n.understood === false).slice(-6).map((n) => `"${fit(n.text, 30)}" → ${catName(n.category)}`).join(", ") || "none"}\n🏷️ Real listings: ${real.filter((l) => l.active && !l.sold).length} live, ${real.filter((l) => l.sold).length} sold\n📬 Leads: ${all.length} · 🙋 Waiting: ${count("OFFERED") + count("INTERESTED")} · 🤝 Swapped: ${count("CONNECTED")}\n📣 Ads: ${[...ads.values()].filter((a) => a.status === "LIVE").length} live, ${[...ads.values()].filter((a) => a.status === "PENDING").length} waiting, ${[...ads.values()].reduce((s, a) => s + a.taps, 0)} taps\n💳 Credits sold: ${paid.reduce((s, p) => s + p.credits, 0)} (${formatUsd(paid.reduce((s, p) => s + p.cents, 0))})\n🛒 Products: ${products.size} (${[...products.values()].filter((p) => !p.photo).length} without a photo) · 🏪 Shops: ${[...users.values()].filter((x) => x.shop).length}\n\nAdmin commands: STATS · LOOKUP N-1001 · GRANT 0771234567 5 · VERIFY 0771234567 · ADS · PHARMACY 0771234567 · SHOP 0771234567 · PRODUCTS · ADD <product>\n(\"Didn't understand\" shows words to add to the search list.)`,
+    `📊 *${env.APP_NAME} today*\n👥 People: ${[...users.keys()].filter((p) => !isSample(p)).length}\n🔎 Posts: ${needs.size} (${[...needs.values()].filter((n) => n.status === "OPEN").length} open)\n🔥 Top searches: ${topText || "none yet"}\n❓ Didn't understand: ${[...needs.values()].filter((n) => n.understood === false).slice(-6).map((n) => `"${fit(n.text, 30)}" → ${catName(n.category)}`).join(", ") || "none"}\n🏷️ Real listings: ${real.filter((l) => l.active && !l.sold).length} live, ${real.filter((l) => l.sold).length} sold\n📬 Leads: ${all.length} · 🙋 Waiting: ${count("OFFERED") + count("INTERESTED")} · 🤝 Swapped: ${count("CONNECTED")}\n📣 Ads: ${[...ads.values()].filter((a) => a.status === "LIVE").length} live, ${[...ads.values()].filter((a) => a.status === "PENDING").length} waiting, ${[...ads.values()].reduce((s, a) => s + a.taps, 0)} taps\n💳 Credits sold: ${paid.reduce((s, p) => s + p.credits, 0)} (${formatUsd(paid.reduce((s, p) => s + p.cents, 0))})\n🛒 Products: ${products.size} (${[...products.values()].filter((p) => !p.photo).length} without a photo) · 🏪 Shops: ${[...users.values()].filter((x) => x.shop).length}\n\nAdmin commands: STATS · LOOKUP N-1001 · GRANT 0771234567 5 · VERIFY 0771234567 · ADS · PHARMACY 0771234567 · SHOP 0771234567 · PRODUCTS · ADD Mazoe orange crush 2L\n(\"Didn't understand\" shows words to add to the search list.)`,
   );
 }
 

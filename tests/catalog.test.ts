@@ -69,3 +69,14 @@ test("spreadsheet and CSV price lists are read", async () => {
     { name: "Rice 2kg", cents: 310 },
   ]);
 });
+
+test("missing size gets a suggestion, not 'unknown'", async () => {
+  const { sizeHint, cleanProductName } = await import("../src/catalog");
+  const list = [mk("PR-1", "Olivine cooking oil 2L")];
+  assert.equal(sizeHint("Olivine cooking oil", list)?.id, "PR-1");
+  assert.equal(sizeHint("Olivine cooking oil 5L", list), null);
+  const r = applyPrices("s", [{ name: "Olivine cooking oil", cents: 270 }, { name: "Mazoe orange crush", cents: 350 }], list);
+  assert.deepEqual(r.needsSize, [{ line: "Olivine cooking oil", example: "Olivine cooking oil 2L 2.70" }]);
+  assert.deepEqual(r.unknownRows, [{ name: "Mazoe orange crush", cents: 350 }]);
+  assert.equal(cleanProductName("< Olivine Cooking Oil 2 litre>"), "Olivine Cooking Oil 2 litre");
+});

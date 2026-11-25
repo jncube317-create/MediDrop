@@ -117,16 +117,24 @@ export function parsePriceLine(line: string): { name: string; cents: number } | 
 export interface PriceUpdate {
   updated: { product: Product; cents: number }[];
   unknown: string[]; // lines we couldn't match to a product
+  unknownRows: { name: string; cents: number }[]; // the same lines, kept so they go live when the product is added
+  needsSize: { line: string; example: string }[]; // product found but the shop left out the size
   unreadable: string[]; // lines with no price
 }
 
 /** Applies a shop's price list (typed lines or spreadsheet rows) to the product list. */
 export function applyPrices(shop: string, rows: { name: string; cents: number }[], products: Iterable<Product>, now = Date.now()): PriceUpdate {
   const list = [...products];
-  const out: PriceUpdate = { updated: [], unknown: [], unreadable: [] };
+  const out: PriceUpdate = { updated: [], unknown: [], unknownRows: [], needsSize: [], unreadable: [] };
   for (const r of rows) {
     const p = bestProduct(r.name, list);
+    const sized = p ? null : sizeHint(r.name, list);
+    if (sized) {
+      out.needsSize.push({ line: r.name, example: `${sized.name} ${(r.cents / 100).toFixed(2)}` });
+      continue;
+    }
     if (!p) {
+      out.unknownRows.push(r);
       out.unknown.push(`${r.name} ${(r.cents / 100).toFixed(2)}`);
       continue;
     }
@@ -134,6 +142,25 @@ export function applyPrices(shop: string, rows: { name: string; cents: number }[
     out.updated.push({ product: p, cents: r.cents });
   }
   return out;
+}
+
+/** Shop typed no size ("Olivine cooking oil") but a sized product matches the words: suggest it. */
+export function sizeHint(typed: string, products: Iterable<Product>): Product | null {
+  const got = tokens(typed);
+  if (got.some((w) => /\d/.test(w))) return null;
+  for (const p of products) {
+    const want = tokens(p.name);
+    const words = want.filter((w) => !/\d/.test(w));
+    if (words.length === want.length || !words.length) continue;
+    const hit = words.filter((w) => got.some((g) => wordsClose(g, w))).length;
+    if (hit / words.length >= 0.75 && got.every((g) => words.some((w) => wordsClose(g, w)))) return p;
+  }
+  return null;
+}
+
+/** Product names: no brackets or stray symbols (people copy "ADD <name>" literally). */
+export function cleanProductName(name: string): string {
+  return name.replace(/[<>\[\]{}"*_]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 /** Category for a new product: "groceries" unless the name clearly says car parts etc. */
