@@ -254,11 +254,8 @@ async function main(): Promise<void> {
     check(has(r, CUSTOMER, /connected with Busi M\.\*[\s\S]*Nissan NP300 single cab · \$8,500[\s\S]*Wanted: This week[\s\S]*1 credit used\. Balance: 2 credits/), "seller accepts: numbers swapped, credits spent, key facts shown");
     {
       const msg = r.find((m) => m.to === CUSTOMER && /Tap to chat/.test(m.body ?? ""))?.body ?? "";
-      const code = msg.match(/https:\/\/scoutly-demo\.example\/c\/([A-Za-z0-9]{10})\b/)?.[1];
-      check(Boolean(code) && !/wa\.me/.test(msg), "chat link is short (no long wa.me link in the message)");
-      const res = await fetch(`http://localhost:${BOT_PORT}/c/${code}`, { redirect: "manual" });
-      const to = res.headers.get("location") ?? "";
-      check(res.status === 302 && /wa\.me\/263000000012\?text=Hi%20Busi%20M\.%2C%20it's%20Sizwe[^ ]*Scoutly/.test(to), "short link opens the chat with the pre-typed Scoutly hello");
+      check(/Tap to chat: https:\/\/wa\.me\/263000000012\?text=Hi%20from%20Scoutly\n/.test(msg), "chat link is a short wa.me link saying 'Hi from Scoutly'");
+      check(!/scoutly-demo\.example|railway/.test(msg), "no server address in the chat link");
       check((await fetch(`http://localhost:${BOT_PORT}/c/AAAAAAAAAA`, { redirect: "manual" })).status === 404, "made-up short links go nowhere");
     }
     check(has(r, CUSTOMER, /found:yes:N-1001/), "asks whether they found what they needed");
@@ -554,7 +551,7 @@ async function main(): Promise<void> {
     check(!has(r, CUSTOMER, /cmp:post/), "groceries don't offer 'Ask sellers too'");
     r = await send(CUSTOMER, { reply: "cmp:shops:PR-001" });
     r = await send(CUSTOMER, { reply: option(r, CUSTOMER, /^cmp:shop:263786666666/) });
-    check(has(r, CUSTOMER, /Spares Hub[\s\S]*📍 Bulawayo CBD[\s\S]*Mon-Sat 8am-5pm[\s\S]*\+263 78 666 6666[\s\S]*\/c\//), "shop details (area, hours, number, chat link) are free");
+    check(has(r, CUSTOMER, /Spares Hub[\s\S]*📍 Bulawayo CBD[\s\S]*Mon-Sat 8am-5pm[\s\S]*\+263 78 666 6666[\s\S]*wa\.me\/263786666666\?text=Hi%20from%20Scoutly/), "shop details (area, hours, number, chat link) are free");
     check(!has(r, CUSTOMER, /Fort Street/), "no street address is shown");
     r = await send(CUSTOMER, { text: "brake pads hilux" });
     check(has(r, CUSTOMER, /Brake pads front Toyota Hilux[\s\S]*\$24\.00\* · Spares Hub \(Bulawayo CBD\)/), "spare parts compare the same way");

@@ -375,18 +375,14 @@ const isAdmin = (phone: string) => Boolean(env.ADMIN_PHONE) && phone === env.ADM
  * A short link (https://<our domain>/c/AbC12xYz9q) that opens the same WhatsApp chat with the same
  * pre-typed hello. The code is random and unguessable; the full wa.me link is kept on the lead.
  */
-function shortChat(lead: Lead, full: string): string {
-  if (!env.PUBLIC_URL) return full;
-  const code = randomBytes(8).toString("base64url").replace(/[-_]/g, "x").slice(0, 10);
-  lead.chat = { ...(lead.chat ?? {}), [code]: full };
-  return `${env.PUBLIC_URL}/c/${code}`;
-}
+/** Pre-typed first message on every chat link: short, so the wa.me link stays short, and the other side sees it came from Scoutly. */
+const SCOUTLY_HELLO = "Hi from Scoutly";
 
 /** Where a short chat link points, or null. */
 export function resolveChat(code: string): string | null {
   if (!/^[A-Za-z0-9]{10}$/.test(code)) return null;
   for (const l of leads.values()) if (l.chat?.[code]) return l.chat[code] ?? null;
-  return shopChats.get(code) ?? null;
+  return null;
 }
 
 /** Hi, hie, hey, hello, helo, howzit, good morning, sawubona, mhoro… all mean "show me the menu". */
@@ -1502,18 +1498,8 @@ async function showShop(u: User, phone: string): Promise<void> {
   track("shop_viewed", u.phone, {});
   await wa.sendText(
     u.phone,
-    `🏪 *${s.name}*${s.area ? `\n📍 ${SHOP_AREAS[s.area]}` : ""}\n🕒 ${s.details}\n\n📞 ${prettyPhone(phone)}\n💬 ${shortChatFor(phone, `Hi ${s.name} 👋 I saw your prices on Scoutly.`)}\n\nPrices come from the shop; confirm in store.\n\n_Type MENU any time._`,
+    `🏪 *${s.name}*${s.area ? `\n📍 ${SHOP_AREAS[s.area]}` : ""}\n🕒 ${s.details}\n\n📞 ${prettyPhone(phone)}\n💬 ${chatLink(phone, SCOUTLY_HELLO)}\n\nPrices come from the shop; confirm in store.\n\n_Type MENU any time._`,
   );
-}
-
-/** Short chat link to a shop (stored on a lightweight record so /c/<code> works like swap links). */
-const shopChats = new Map<string, string>();
-function shortChatFor(phone: string, hello: string): string {
-  const full = chatLink(phone, hello);
-  if (!env.PUBLIC_URL) return full;
-  const code = randomBytes(8).toString("base64url").replace(/[-_]/g, "x").slice(0, 10);
-  shopChats.set(code, full);
-  return `${env.PUBLIC_URL}/c/${code}`;
 }
 
 /** Carousel first; single picture cards if Meta refuses; a plain list as the last resort. */
@@ -2380,18 +2366,14 @@ async function connect(lead: Lead): Promise<void> {
     `📍 ${town}`,
   ].filter(Boolean).join("\n");
 
-  // Pre-typed first message: the other person sees straight away that this came from Scoutly.
-  const item = l ? (l.kind === "item" ? `your ${fit(l.title, 40)}${l.priceCents ? ` (${priceLabel(l)})` : ""}` : `your ${catName(l.category).toLowerCase()} service`) : "your listing";
-  const buyerHello = `Hi ${seller}, it's ${buyer} 👋 I found you on Scoutly about ${item}.${wanted ? ` I need it ${wanted.toLowerCase()}.` : ""} Is it still available?`;
-  const sellerHello = `Hi ${buyer}, it's ${seller} from Scoutly 👋 about ${need ? `your request "${fit(need.text, 60)}"` : what}. When suits you?`;
 
   await wa.sendText(
     lead.customer,
-    `✅ *You're connected with ${seller}*\n\n${deal}\n\n📞 ${prettyPhone(lead.provider)}\n💬 Tap to chat (we've typed a hello for you): ${shortChat(lead, chatLink(lead.provider, buyerHello))}\n\nAgree the price before anything changes hands. Meet in a public place, check the item or work, and never pay a deposit before you've seen it.${l?.category === "pharmacy" ? "\n💊 Prescription medicines: take your prescription. The pharmacy must see it before selling." : ""}\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.customer))}.\n${LIABILITY}${l?.sample ? "\n\n(Sample seller for the demo: this number isn't real.)" : ""}`,
+    `✅ *You're connected with ${seller}*\n\n${deal}\n\n📞 ${prettyPhone(lead.provider)}\n💬 Tap to chat: ${chatLink(lead.provider, SCOUTLY_HELLO)}\n\nAgree the price before anything changes hands. Meet in a public place, check the item or work, and never pay a deposit before you've seen it.${l?.category === "pharmacy" ? "\n💊 Prescription medicines: take your prescription. The pharmacy must see it before selling." : ""}\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.customer))}.\n${LIABILITY}${l?.sample ? "\n\n(Sample seller for the demo: this number isn't real.)" : ""}`,
   );
   await tell(
     lead.provider,
-    `✅ *New customer: ${buyer}* (via Scoutly)\n\n${deal}\n\n📞 ${prettyPhone(lead.customer)}\n💬 Tap to chat (we've typed a hello for you): ${shortChat(lead, chatLink(lead.customer, sellerHello))}\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.provider))}.\n${LIABILITY}`,
+    `✅ *New customer: ${buyer}* (via Scoutly)\n\n${deal}\n\n📞 ${prettyPhone(lead.customer)}\n💬 Tap to chat: ${chatLink(lead.customer, SCOUTLY_HELLO)}\n\n${credits(lead.cost)} used. Balance: ${credits(ledger.balance(lead.provider))}.\n${LIABILITY}`,
   );
   if (need) {
     if (need.connections >= MAX_CONNECTIONS_PER_NEED) {
@@ -2726,7 +2708,7 @@ async function adTapped(u: User, adId: string): Promise<void> {
   }
   await wa.sendText(
     u.phone,
-    `📣 *${nameOf(ad.owner)}*\n${ad.text}\n📞 ${prettyPhone(ad.owner)}\n💬 Chat now: ${chatLink(ad.owner)}\n\n${LIABILITY}${isSample(ad.owner) ? "\n\n(Sample ad for the demo: this number isn't real.)" : ""}`,
+    `📣 *${nameOf(ad.owner)}*\n${ad.text}\n📞 ${prettyPhone(ad.owner)}\n💬 Chat now: ${chatLink(ad.owner, SCOUTLY_HELLO)}\n\n${LIABILITY}${isSample(ad.owner) ? "\n\n(Sample ad for the demo: this number isn't real.)" : ""}`,
   );
 }
 
