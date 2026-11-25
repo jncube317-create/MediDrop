@@ -34,6 +34,9 @@ export const env = {
   // Sample listings, providers and ads so a one-phone demo works. Set false for real use.
   // Demo listings and ads are OFF unless SAMPLE_PROVIDERS=true (only the test simulator turns them on).
   SAMPLE_PROVIDERS: optional("SAMPLE_PROVIDERS").toLowerCase() === "true",
+  // The approved WhatsApp template for "you have an update waiting" (sent after the 24-hour window).
+  WA_UPDATE_TEMPLATE: optional("WA_UPDATE_TEMPLATE") || "scoutly_update_waiting",
+  WA_TEMPLATE_LANG: optional("WA_TEMPLATE_LANG") || "en",
   SAMPLE_REPLY_SECONDS: Number(optional("SAMPLE_REPLY_SECONDS") || "8"),
   PAYNOW_INTEGRATION_ID: optional("PAYNOW_INTEGRATION_ID"),
   PAYNOW_INTEGRATION_KEY: optional("PAYNOW_INTEGRATION_KEY"),

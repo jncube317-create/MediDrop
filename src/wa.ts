@@ -7,7 +7,27 @@ import { validateButtons, validateCarousel, validateList, validateText, type But
 const graph = () => `${env.GRAPH_BASE_URL}/${env.GRAPH_API_VERSION}`;
 const authHeader = () => ({ Authorization: `Bearer ${env.WA_TOKEN}` });
 
-async function postMessage(payload: Record<string, unknown>): Promise<boolean> {
+/**
+ * Hooks the bot sets: `hold` takes a free-form message the person can't receive right now
+ * (more than 24 hours since they last wrote) so it can be delivered later; `sent` counts messages.
+ */
+export interface SendHooks {
+  hold: (to: string, payload: Record<string, unknown>) => boolean;
+  sent: (to: string, payload: Record<string, unknown>) => void;
+}
+let hooks: SendHooks | null = null;
+export function setSendHooks(h: SendHooks): void {
+  hooks = h;
+}
+
+/** Recent message IDs → what was sent, so a late "outside the 24-hour window" failure can still be held. */
+const recent = new Map<string, { to: string; payload: Record<string, unknown> }>();
+export function sentMessage(wamid: string): { to: string; payload: Record<string, unknown> } | null {
+  return recent.get(wamid) ?? null;
+}
+
+async function postMessage(payload: Record<string, unknown>, direct = false): Promise<boolean> {
+  if (!direct && payload.type !== "template" && hooks?.hold(String(payload.to), payload)) return true;
   try {
     const res = await fetch(`${graph()}/${env.WA_PHONE_NUMBER_ID}/messages`, {
       method: "POST",
@@ -19,6 +39,17 @@ async function postMessage(payload: Record<string, unknown>): Promise<boolean> {
       console.error(`[WA] SEND FAILED (HTTP ${res.status}) to ...${String(payload.to).slice(-4)}: ${errorBody}`);
       return false;
     }
+    try {
+      const out = (await res.json()) as { messages?: { id?: string }[] };
+      const wamid = out.messages?.[0]?.id;
+      if (wamid) {
+        recent.set(wamid, { to: String(payload.to), payload });
+        if (recent.size > 3000) recent.delete(recent.keys().next().value as string);
+      }
+    } catch {
+      /* no body: fine */
+    }
+    hooks?.sent(String(payload.to), payload);
     return true;
   } catch (err) {
     console.error("[WA] SEND FAILED (network):", err instanceof Error ? err.message : err);
@@ -122,6 +153,30 @@ export async function sendCarousel(to: string, body: string, cards: CarouselCard
           },
         })),
       },
+    },
+  });
+}
+
+/** Re-sends a message exactly as it was first built (used to deliver held messages). */
+export async function resend(payload: Record<string, unknown>): Promise<boolean> {
+  return postMessage(payload, true);
+}
+
+/**
+ * The approved "you have an update waiting" template: the only kind of message WhatsApp
+ * allows more than 24 hours after someone last wrote. Its button brings them back.
+ */
+export async function sendUpdateTemplate(to: string, name: string): Promise<boolean> {
+  return postMessage({
+    to,
+    type: "template",
+    template: {
+      name: env.WA_UPDATE_TEMPLATE,
+      language: { code: env.WA_TEMPLATE_LANG },
+      components: [
+        { type: "body", parameters: [{ type: "text", text: name }] },
+        { type: "button", sub_type: "quick_reply", index: "0", parameters: [{ type: "payload", payload: "held:show" }] },
+      ],
     },
   });
 }

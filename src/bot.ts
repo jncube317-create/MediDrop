@@ -128,6 +128,10 @@ interface User {
   shopArea?: ShopArea | null; // area picked while applying (no street address is ever stored)
   shopReminded?: string; // week of the last "update your prices" reminder
   lastIn?: number; // when they last messaged us (WhatsApp only allows free-form replies for 24h)
+  held?: { payload: Record<string, unknown>; at: number }[]; // messages waiting until they're back in the 24-hour window
+  heldTemplateAt?: number; // when we last sent the "update waiting" template
+  banned?: boolean; // blocked by the admin
+  bannedToldAt?: number;
   lastWeekly?: string; // week the free top-up was last checked
   step: Step;
   draft: Draft;
@@ -184,6 +188,7 @@ interface Listing {
   sample: boolean;
   sampleQuote: string | null;
   createdAt: number;
+  adminPaused?: boolean; // hidden by the admin (PAUSE O-512 or BAN); only the admin can bring it back
 }
 
 interface Ad {
@@ -226,7 +231,8 @@ let purchaseSeq = 100;
 let productSeq = 0;
 
 const DRAFT_TIMEOUT_MS = 30 * 60 * 1000;
-const NEED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const NEED_TTL_DAYS = 30; // posts stay open a month: "sign up now, get matched later"
+const NEED_TTL_MS = NEED_TTL_DAYS * 24 * 60 * 60 * 1000;
 const PAYMENT_TIMEOUT_MS = 10 * 60 * 1000;
 const NOT_DRAFT: Step[] = ["ASK_CONSENT", "ASK_NAME", "ASK_CITY", "ASK_ROLE", "MENU", "BUY_WAIT"];
 const LIABILITY = `⚖️ ${env.APP_NAME} only connects you. We aren't part of any deal and aren't responsible for it.`;
@@ -279,7 +285,12 @@ let savedEntries = 0;
 let savedSeq = "";
 let flushing = false;
 
-const seqs = () => ({ needSeq, listingSeq, leadSeq, adSeq, purchaseSeq, productSeq });
+/** WhatsApp messages sent this month (Meta gives 1,000 free service messages a month per number). */
+let msgMonth = "";
+let msgCount = 0;
+let tplCount = 0;
+let msgWarned = 0; // last warning level sent to the admin this month (800, 1000)
+const seqs = () => ({ needSeq, listingSeq, leadSeq, adSeq, purchaseSeq, productSeq, msgMonth, msgCount, tplCount, msgWarned });
 const maxNum = (ids: Iterable<string>) => Math.max(0, ...[...ids].map((id) => Number(id.replace(/\D/g, "")) || 0));
 
 /** Loads saved data (if Supabase is set), then adds the demo samples. Call once before serving. */
@@ -305,9 +316,17 @@ export async function initState(): Promise<void> {
     adSeq = Math.max(adSeq, saved.adSeq ?? 0, maxNum(ads.keys()));
     purchaseSeq = Math.max(purchaseSeq, saved.purchaseSeq ?? 0, maxNum(purchases.keys()));
     productSeq = Math.max(productSeq, saved.productSeq ?? 0, maxNum(products.keys()));
+    msgMonth = saved.msgMonth ?? "";
+    msgCount = saved.msgCount ?? 0;
+    tplCount = saved.tplCount ?? 0;
+    msgWarned = saved.msgWarned ?? 0;
     tidyShopData();
     console.log(`[DB] Loaded ${users.size} users, ${needs.size} posts, ${listings.size} listings, ${leads.size} leads, ${savedEntries} credit entries.`);
     setInterval(() => void flushState(), 2000).unref();
+    // Keep the free Supabase project awake: it pauses after a quiet week. A tiny write every 6 hours.
+    const beat = () => void upsert("meta", [{ key: "heartbeat", value: { at: new Date().toISOString() } }]).catch((e) => console.error("[DB] heartbeat failed:", e instanceof Error ? e.message : e));
+    beat();
+    setInterval(beat, 6 * 3600_000).unref();
   } else {
     console.warn("⚠️ No SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY: data lives in memory and is wiped on every redeploy.");
   }
@@ -492,9 +511,24 @@ async function refusedAsBanned(u: User, text: string): Promise<boolean> {
 
 // ---------------------------------------------------------------- entry point
 
+/** When each number last wrote to us, including people who don't have a record yet (first message). */
+const lastSeen = new Map<string, number>();
+
 export async function handleIncoming(m: Incoming): Promise<void> {
-  { const me = users.get(m.from); if (me) me.lastIn = Date.now(); }
-  if (isAdmin(m.from) && /^(stats|lookup|grant|verify|ads|products|add\s+\S|pharmacy\s+\+?\d|unpharmacy\s+\+?\d|shop\s+\+?\d|unshop\s+\+?\d)/i.test(textOf(m))) return adminCommand(m.from, textOf(m));
+  lastSeen.set(m.from, Date.now());
+  const me = users.get(m.from);
+  if (me) me.lastIn = Date.now();
+  if (me?.banned && !isAdmin(m.from)) {
+    if (!me.bannedToldAt || Date.now() - me.bannedToldAt > 24 * 3600_000) {
+      me.bannedToldAt = Date.now();
+      await wa.sendText(m.from, `Your ${env.APP_NAME} account has been suspended for breaking the rules, so we can't help with this. If you think this is a mistake, contact the ${env.APP_NAME} team.`);
+    }
+    return;
+  }
+  const delivered = me?.held?.length ? await deliverHeld(me) : 0;
+  // The template's "Show me" button: the held updates are the answer. Nothing held (already seen) → the menu.
+  if (m.kind === "reply" && m.id === "held:show") return delivered ? undefined : void (me ? await showMenu(me, "You're all caught up ✅") : undefined);
+  if (isAdmin(m.from) && /^(stats|lookup|grant|verify|ads|products|add\s+\S|pharmacy\s+\+?\d|unpharmacy\s+\+?\d|shop\s+\+?\d|unshop\s+\+?\d|ban\s+\+?\d|unban\s+\+?\d|pause\s+o-\d|resume\s+o-\d)/i.test(textOf(m))) return adminCommand(m.from, textOf(m));
   if (isAdmin(m.from) && m.kind === "image" && /^\s*(add|photo)\b/i.test(m.caption ?? "")) return adminProductPhoto(m.from, m.mediaId, m.caption ?? "");
   if (isAdmin(m.from) && m.kind === "reply" && /^shop:(ok|no):\d+$/.test(m.id)) {
     const [, verdict, phone] = m.id.split(":");
@@ -1206,6 +1240,74 @@ async function reviewPharmacy(admin: string, phone: string, approve: boolean): P
   p.pharmacyApplication = null;
 }
 
+// ---------------------------------------------------------------- the 24-hour window: hold, notify, deliver
+
+const WINDOW_MS = 23 * 3600_000; // a little under WhatsApp's 24 hours, to be safe
+const HELD_MAX = 15;
+const HELD_KEEP_MS = 7 * 24 * 3600_000;
+
+function inWindow(phone: string): boolean {
+  const u = users.get(phone);
+  if (!u || isSample(phone)) return true; // not someone we track (e.g. demo numbers)
+  const last = Math.max(u.lastIn ?? 0, lastSeen.get(phone) ?? 0);
+  return Date.now() - last < WINDOW_MS;
+}
+
+/** Free-form message to someone outside the window: keep it, and send the approved template (at most once a day). */
+function holdIfAway(to: string, payload: Record<string, unknown>): boolean {
+  if (inWindow(to)) return false;
+  const u = users.get(to)!;
+  u.held = [...(u.held ?? []), { payload, at: Date.now() }].slice(-HELD_MAX);
+  if (!u.heldTemplateAt || Date.now() - u.heldTemplateAt > 20 * 3600_000) {
+    u.heldTemplateAt = Date.now();
+    track("update_template_sent", to, {});
+    void wa.sendUpdateTemplate(to, fit(u.profile?.name ?? u.name ?? "there", 30));
+  }
+  return true;
+}
+
+/** Meta said a message failed because the 24-hour window had closed: hold it the same way. */
+export function holdFailed(wamid: string): void {
+  const sent = wa.sentMessage(wamid);
+  if (!sent) return;
+  const u = users.get(sent.to);
+  if (!u) return;
+  u.lastIn = 0; // they're clearly outside the window
+  lastSeen.delete(sent.to);
+  holdIfAway(sent.to, sent.payload);
+}
+
+async function deliverHeld(u: User): Promise<number> {
+  const fresh = (u.held ?? []).filter((h) => Date.now() - h.at < HELD_KEEP_MS);
+  u.held = [];
+  u.heldTemplateAt = 0;
+  if (!fresh.length) return 0;
+  track("held_delivered", u.phone, { count: fresh.length });
+  await wa.sendText(u.phone, `📬 *While you were away* (${fresh.length} update${fresh.length === 1 ? "" : "s"}):`);
+  for (const h of fresh) await wa.resend(h.payload);
+  return fresh.length;
+}
+
+function countSent(_to: string, payload: Record<string, unknown>): void {
+  const month = new Date(Date.now() + 2 * 3600_000).toISOString().slice(0, 7); // Harare month
+  if (month !== msgMonth) {
+    msgMonth = month;
+    msgCount = 0;
+    tplCount = 0;
+    msgWarned = 0;
+  }
+  if (payload.type === "template") tplCount += 1;
+  else msgCount += 1;
+  for (const level of [800, 1000]) {
+    if (msgCount >= level && msgWarned < level && env.ADMIN_PHONE) {
+      msgWarned = level;
+      void wa.sendText(env.ADMIN_PHONE, level === 1000 ? `⚠️ *${env.APP_NAME} has used its 1,000 free WhatsApp messages this month.* Every reply from now on is charged to the card in WhatsApp Manager.` : `⚠️ ${env.APP_NAME} has used *800 of its 1,000 free* WhatsApp messages this month.`);
+    }
+  }
+}
+
+wa.setSendHooks({ hold: holdIfAway, sent: countSent });
+
 // ---------------------------------------------------------------- Scoutly Marketplace (browse what's for sale)
 
 const MARKET_PAGE = 9; // 9 listings + 1 "See more" card = one carousel message per page
@@ -1566,6 +1668,8 @@ async function showProductPrices(u: User, productId: string): Promise<void> {
 async function listProductShops(u: User, productId: string): Promise<void> {
   const p = products.get(productId);
   if (!p) return showMenu(u, "That product isn't listed any more.");
+  const live = livePrices(p);
+  if (live.length === 1) return showShop(u, live[0]!.shop); // one shop: skip the list (saves a tap and a message)
   await wa.sendList(
     u.phone,
     `Shops with *${fit(p.name, 50)}*, cheapest first. Tap one for the area, hours and number.`,
@@ -2004,7 +2108,7 @@ async function sendToProviders(u: User, need: Need): Promise<void> {
   const ad = pickAd(need.category, need.city);
   track(matches.length ? "leads_sent" : "post_no_match", u.phone, { category: need.category, count: matches.length });
   if (matches.length === 0) {
-    await wa.sendText(u.phone, `✅ Posted (${need.id}).\n\nNo ${people} ${need.anywhere ? "on Scoutly" : `in ${cityName(need.city)}`} are listed yet. Your post stays open for 7 days, and we'll send it to anyone who joins.`);
+    await wa.sendText(u.phone, `✅ Posted (${need.id}).\n\nNo ${people} ${need.anywhere ? "on Scoutly" : `in ${cityName(need.city)}`} are listed yet. Your post stays open for ${NEED_TTL_DAYS} days, and we'll send it to anyone who joins.`);
   } else {
     await wa.sendText(
       u.phone,
@@ -2672,6 +2776,7 @@ async function closeMyNeed(u: User, needId: string): Promise<void> {
 async function toggleListing(u: User, listingId: string, on: boolean): Promise<void> {
   const l = listings.get(listingId);
   if (!l || l.owner !== u.phone || l.sold) return didntGetThat(u);
+  if (on && l.adminPaused) return void (await wa.sendText(u.phone, `This listing was paused by the ${env.APP_NAME} team. Contact us if you think this is a mistake.`));
   if (on && l.strikes >= 3) return void (await wa.sendText(u.phone, "This listing was paused after reports. Reply here and our team will review it."));
   if (on && !l.active && activeListingsOf(u.phone).length >= MAX_ACTIVE_LISTINGS) {
     return void (await wa.sendText(u.phone, `You already have ${MAX_ACTIVE_LISTINGS} live listings. Pause another one first.`));
@@ -2971,6 +3076,45 @@ async function adminCommand(to: string, text: string): Promise<void> {
       await tell(phone, `✅ You're now a verified seller on ${env.APP_NAME}. Your listings show the ✅ badge.`);
       return;
     }
+    case "ban":
+    case "unban": {
+      const phone = toIntl(arg1);
+      const target = phone ? users.get(phone) : undefined;
+      if (!phone || !target) return void (await wa.sendText(to, "Use: BAN 0771234567 to block someone, UNBAN 0771234567 to undo."));
+      if (isAdmin(phone)) return void (await wa.sendText(to, "You can't ban the admin number."));
+      const banning = cmd.toLowerCase() === "ban";
+      target.banned = banning;
+      let n = 0;
+      for (const l of listings.values()) {
+        if (l.owner !== phone) continue;
+        if (banning && l.active) {
+          l.active = false;
+          l.adminPaused = true;
+          n += 1;
+        } else if (!banning && l.adminPaused && !l.sold) {
+          l.active = true;
+          l.adminPaused = false;
+          n += 1;
+        }
+      }
+      if (banning && target.shop) {
+        target.shop = null; // a banned shop's prices disappear too (SHOP 077… restores the shop; they resend prices)
+        for (const p of products.values()) delete p.prices[phone];
+      }
+      track(banning ? "user_banned" : "user_unbanned", phone, {});
+      return void (await wa.sendText(to, banning ? `🚫 ${nameOf(phone)} (${prettyPhone(phone)}) is banned. ${n} listing${n === 1 ? "" : "s"} hidden. UNBAN ${arg1} to undo.` : `✅ ${nameOf(phone)} is unbanned. ${n} listing${n === 1 ? "" : "s"} back on.`));
+    }
+    case "pause":
+    case "resume": {
+      const l = listings.get(arg1.toUpperCase());
+      if (!l) return void (await wa.sendText(to, "Use: PAUSE O-512 to hide a listing, RESUME O-512 to bring it back."));
+      if (l.sold) return void (await wa.sendText(to, `${l.id} is already marked as sold, so nobody can see it.`));
+      const pausing = cmd.toLowerCase() === "pause";
+      l.active = !pausing && !l.sold;
+      l.adminPaused = pausing;
+      await tell(l.owner, pausing ? `⏸ Your listing *${fit(l.title, 50)}* (${l.id}) has been paused by the ${env.APP_NAME} team for review.` : `✅ Your listing *${fit(l.title, 50)}* (${l.id}) is live again.`);
+      return void (await wa.sendText(to, `${pausing ? "⏸ Paused" : "✅ Resumed"} ${l.id} · ${fit(l.title, 40)} (${nameOf(l.owner)}).`));
+    }
     case "products": {
       const list = [...products.values()];
       const lines = list.slice(-20).map((p) => `${p.id} · ${p.name}${p.photo ? "" : " (no photo)"} · ${livePrices(p).length} shops`);
@@ -3048,7 +3192,7 @@ async function sendStats(to: string): Promise<void> {
   const topText = [...top.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${catName(k)} (${v})`).join(", ");
   await wa.sendText(
     to,
-    `📊 *${env.APP_NAME} today*\n👥 People: ${[...users.keys()].filter((p) => !isSample(p)).length}\n🔎 Posts: ${needs.size} (${[...needs.values()].filter((n) => n.status === "OPEN").length} open)\n🔥 Top searches: ${topText || "none yet"}\n❓ Didn't understand: ${[...needs.values()].filter((n) => n.understood === false).slice(-6).map((n) => `"${fit(n.text, 30)}" → ${catName(n.category)}`).join(", ") || "none"}\n🏷️ Real listings: ${real.filter((l) => l.active && !l.sold).length} live, ${real.filter((l) => l.sold).length} sold\n📬 Leads: ${all.length} · 🙋 Waiting: ${count("OFFERED") + count("INTERESTED")} · 🤝 Swapped: ${count("CONNECTED")}\n📣 Ads: ${[...ads.values()].filter((a) => a.status === "LIVE").length} live, ${[...ads.values()].filter((a) => a.status === "PENDING").length} waiting, ${[...ads.values()].reduce((s, a) => s + a.taps, 0)} taps\n💳 Credits sold: ${paid.reduce((s, p) => s + p.credits, 0)} (${formatUsd(paid.reduce((s, p) => s + p.cents, 0))})\n🛒 Products: ${products.size} (${[...products.values()].filter((p) => !p.photo).length} without a photo) · 🏪 Shops: ${[...users.values()].filter((x) => x.shop).length}\n\nAdmin commands: STATS · LOOKUP N-1001 · GRANT 0771234567 5 · VERIFY 0771234567 · ADS · PHARMACY 0771234567 · SHOP 0771234567 · PRODUCTS · ADD Mazoe orange crush 2L\n(\"Didn't understand\" shows words to add to the search list.)`,
+    `📊 *${env.APP_NAME} today*\n👥 People: ${[...users.keys()].filter((p) => !isSample(p)).length}\n🔎 Posts: ${needs.size} (${[...needs.values()].filter((n) => n.status === "OPEN").length} open)\n🔥 Top searches: ${topText || "none yet"}\n❓ Didn't understand: ${[...needs.values()].filter((n) => n.understood === false).slice(-6).map((n) => `"${fit(n.text, 30)}" → ${catName(n.category)}`).join(", ") || "none"}\n🏷️ Real listings: ${real.filter((l) => l.active && !l.sold).length} live, ${real.filter((l) => l.sold).length} sold\n📬 Leads: ${all.length} · 🙋 Waiting: ${count("OFFERED") + count("INTERESTED")} · 🤝 Swapped: ${count("CONNECTED")}\n📣 Ads: ${[...ads.values()].filter((a) => a.status === "LIVE").length} live, ${[...ads.values()].filter((a) => a.status === "PENDING").length} waiting, ${[...ads.values()].reduce((s, a) => s + a.taps, 0)} taps\n💳 Credits sold: ${paid.reduce((s, p) => s + p.credits, 0)} (${formatUsd(paid.reduce((s, p) => s + p.cents, 0))})\n📨 WhatsApp messages this month: ${msgMonth === new Date(Date.now() + 2 * 3600_000).toISOString().slice(0, 7) ? msgCount : 0} / 1,000 free · templates: ${tplCount}\n🛒 Products: ${products.size} (${[...products.values()].filter((p) => !p.photo).length} without a photo) · 🏪 Shops: ${[...users.values()].filter((x) => x.shop).length}\n\nAdmin commands: STATS · LOOKUP N-1001 · GRANT 0771234567 5 · VERIFY 0771234567 · ADS · PHARMACY 0771234567 · SHOP 0771234567 · PRODUCTS · ADD Mazoe orange crush 2L · BAN 0771234567 · PAUSE O-512\n(\"Didn't understand\" shows words to add to the search list.)`,
   );
 }
 
@@ -3071,7 +3215,7 @@ setInterval(() => {
       continue;
     }
     if (need.status === "OPEN" && now - need.createdAt > NEED_TTL_MS) {
-      void closeNeed(need, "EXPIRED").then(() => wa.sendText(need.owner, `Your post "${fit(need.text, 50)}" has expired after 7 days. Type MENU to post it again.`));
+      void closeNeed(need, "EXPIRED").then(() => wa.sendText(need.owner, `Your post "${fit(need.text, 50)}" has expired after ${NEED_TTL_DAYS} days. Type MENU to post it again.`));
     }
   }
   // Monday price reminder for shops (from 8am Harare). Free-form messages only reach people who

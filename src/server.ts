@@ -4,7 +4,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { env, paynowConfigured } from "./env";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { handleIncoming, confirmPurchase, flushState, initState, resolveChat, type Incoming } from "./bot";
+import { handleIncoming, confirmPurchase, flushState, initState, resolveChat, holdFailed, type Incoming } from "./bot";
 import { MEDIA_DIR, SAFE_FILE } from "./media";
 
 const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 });
@@ -71,10 +71,12 @@ async function processWebhook(body: unknown): Promise<void> {
   for (const entry of entries) {
     for (const change of entry.changes ?? []) {
       const value = change.value ?? {};
-      const statuses = (value.statuses as { status: string; recipient_id: string; errors?: unknown }[] | undefined) ?? [];
+      const statuses = (value.statuses as { id?: string; status: string; recipient_id: string; errors?: { code?: number }[] }[] | undefined) ?? [];
       for (const st of statuses) {
         if (st.status === "failed") {
           console.error(`[WA] DELIVERY FAILED to ...${st.recipient_id.slice(-4)}: ${JSON.stringify(st.errors)}`);
+          // 131047 = more than 24 hours since they last wrote: hold it and send the "update waiting" template.
+          if (st.id && st.errors?.some((e) => e.code === 131047)) holdFailed(st.id);
         }
       }
       const messages = (value.messages as WaMessage[] | undefined) ?? [];

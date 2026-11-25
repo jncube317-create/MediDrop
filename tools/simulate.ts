@@ -17,6 +17,7 @@ const GRAPH_PORT = 4999;
 const BOT_PORT = 4998;
 
 interface Sent {
+  id?: string; // the WhatsApp message ID the fake API gave it
   to: string;
   type: string;
   body: string;
@@ -24,6 +25,7 @@ interface Sent {
 }
 
 const outbox: Sent[] = [];
+let wamidSeq = 0;
 const NAMES: Record<string, string> = { [CUSTOMER]: "CUSTOMER", [PROVIDER]: "PROVIDER", [ADMIN]: "ADMIN", [BUYER2]: "BUYER2", [SHOP1]: "SHOP1", [SHOP2]: "SHOP2" };
 
 // ---- fake Meta Graph API: records every message the bot sends
@@ -58,6 +60,10 @@ const graph = createServer((req, res) => {
       const options: string[] = [];
       let body = "";
       if (p.type === "text") body = p.text.body;
+      if (p.type === "template") {
+        body = `[template ${p.template.name}] ${p.template.components?.[0]?.parameters?.[0]?.text ?? ""}`;
+        options.push(...(p.template.components ?? []).filter((c: any) => c.type === "button").map((c: any) => `${c.parameters[0].payload} "Show me"`));
+      }
       if (p.type === "image") body = `[image] ${p.image.link} · ${p.image.caption}`;
       if (i?.type === "button") {
         body = `${i.header?.image ? `[photo ${String(i.header.image.link).split("/").pop()}] ` : ""}${i.body.text}${i.footer ? `\n— ${i.footer.text}` : ""}`;
@@ -77,7 +83,11 @@ const graph = createServer((req, res) => {
         body = `${i.body.text}  [carousel]`;
         for (const c of i.action.cards) options.push(`${c.action.buttons[0].quick_reply.id} · ${c.body.text.replace(/\n/g, " · ")} · ${c.header.image.link.split("/").pop()}`);
       }
-      outbox.push({ to: p.to, type: i?.type ?? p.type, body, options });
+      const id = `wamid.sim${++wamidSeq}`;
+      outbox.push({ id, to: p.to, type: i?.type ?? p.type, body, options });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ messages: [{ id }] }));
+      return;
     } catch {
       /* ignore */
     }
@@ -556,6 +566,8 @@ async function main(): Promise<void> {
     r = await send(CUSTOMER, { text: "brake pads hilux" });
     check(has(r, CUSTOMER, /Brake pads front Toyota Hilux[\s\S]*\$24\.00\* · Spares Hub \(Bulawayo CBD\)/), "spare parts compare the same way");
     check(has(r, CUSTOMER, /cmp:post "🔎 Ask sellers too"/), "spare parts still offer 'Ask sellers too'");
+    r = await send(CUSTOMER, { reply: "cmp:shops:PR-003" });
+    check(has(r, CUSTOMER, /🏪 \*Spares Hub\*[\s\S]*📍 Bulawayo CBD/) && !has(r, CUSTOMER, /cheapest first\. Tap one/), "only one shop: Shop details opens it straight away");
     await send(CUSTOMER, { text: "MENU" });
     r = await send(CUSTOMER, { text: "toyota hilux 2012" });
     check(!has(r, CUSTOMER, /Brake pads/), "a car search doesn't show spare-part prices");
@@ -579,6 +591,49 @@ async function main(): Promise<void> {
     r = await send(CUSTOMER, { text: "market" });
     check(has(r, CUSTOMER, /Welcome to \*Scoutly Marketplace\*/), "typing MARKET opens the marketplace");
     await send(CUSTOMER, { text: "MENU" });
+
+    // ---- 24-hour window: a message Meta couldn't deliver is held; the template brings them back
+    {
+      r = await send(PROVIDER, { text: "MENU" });
+      const last = r.filter((m) => m.to === PROVIDER).pop()!;
+      await fetch(`http://localhost:${BOT_PORT}/webhook`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entry: [{ changes: [{ value: { statuses: [{ id: last.id, status: "failed", recipient_id: PROVIDER, errors: [{ code: 131047 }] }] } }] }] }),
+      });
+      await sleep(400);
+      r = flush();
+      check(has(r, PROVIDER, /\[template scoutly_update_waiting\] Joe/) && has(r, PROVIDER, /held:show "Show me"/), "undelivered message (24h window closed) → the 'update waiting' template");
+      r = await send(CUSTOMER, { reply: "menu:market" });
+      check(!r.some((m) => m.to === PROVIDER), "while they're away, nothing free-form is sent to them");
+      r = await send(PROVIDER, { reply: "held:show" });
+      check(has(r, PROVIDER, /While you were away\* \(1 update\)/) && has(r, PROVIDER, /What would you like to do/), "tapping Show me delivers what was held");
+      r = await send(PROVIDER, { reply: "held:show" });
+      check(has(r, PROVIDER, /all caught up/), "tapping Show me again: all caught up");
+      await send(CUSTOMER, { text: "MENU" });
+    }
+
+    // ---- admin: BAN / UNBAN, PAUSE / RESUME, messages counter
+    r = await send(ADMIN, { text: "BAN 0784444444" });
+    check(has(r, ADMIN, /🚫 [^\n]* is banned/), "BAN blocks a user");
+    r = await send(BUYER2, { text: "hi" });
+    check(has(r, BUYER2, /account has been suspended/) && !has(r, BUYER2, /menu:find/), "a banned user gets the suspended note, nothing else");
+    r = await send(BUYER2, { text: "hello?" });
+    check(!r.some((m) => m.to === BUYER2), "the suspended note is sent at most once a day");
+    r = await send(ADMIN, { text: "UNBAN 0784444444" });
+    check(has(r, ADMIN, /is unbanned/), "UNBAN lifts it");
+    {
+      const lid = outbox.filter((m) => m.to === PROVIDER).map((m) => m.body.match(/You're listed\* \((O-\d+)\)/)?.[1]).filter(Boolean).pop()!;
+      r = await send(ADMIN, { text: `PAUSE ${lid}` });
+      check(has(r, ADMIN, new RegExp(`Paused ${lid}`)) && has(r, PROVIDER, /paused by the Scoutly team for review/), "PAUSE hides a listing and tells the owner");
+      r = await send(PROVIDER, { reply: `resume:${lid}` });
+      check(has(r, PROVIDER, /paused by the Scoutly team\. Contact us/), "the owner can't undo an admin pause");
+      r = await send(ADMIN, { text: `RESUME ${lid}` });
+      check(has(r, PROVIDER, /is live again/), "RESUME brings it back");
+    }
+    r = await send(ADMIN, { text: "STATS" });
+    check(has(r, ADMIN, /WhatsApp messages this month: \d+ \/ 1,000 free · templates: 1/), "STATS shows messages used this month");
+    await send(ADMIN, { text: "MENU" });
 
     // ---- How it works explains credits and number-sharing consent
     r = await send(CUSTOMER, { reply: "menu:help" });
