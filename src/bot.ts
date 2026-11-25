@@ -56,7 +56,7 @@ import { track } from "./analytics";
 import { demoPhoto, savePhoto, downloadMedia } from "./media";
 import { dbEnabled, loadTable, upsert, type CreditRow, type Row } from "./store";
 import { understand, subjectOf } from "./parse";
-import { type Product, searchProducts, livePrices, ageLabel, parsePriceLine, applyPrices, productCategory, bestProduct, sizeHint, cleanProductName } from "./catalog";
+import { type Product, searchProducts, livePrices, ageLabel, parsePriceLine, applyPrices, productCategory, bestProduct, sizeHint, cleanProductName, marketPage } from "./catalog";
 import { readPriceSheet } from "./sheet";
 import type { CarouselCard } from "./limits";
 
@@ -633,6 +633,7 @@ async function conversation(m: Incoming): Promise<void> {
   if (/^stop$/i.test(text)) return stopAlerts(u);
   if (/^pharmacy$/i.test(text)) return askPharmacyDetails(u);
   if (/^shop$/i.test(text)) return askShopDetails(u);
+  if (/^(market|marketplace|browse)$/i.test(text)) return showMarket(u, false);
   if (/^prices?$/i.test(text) && u.shop) return askShopPrices(u);
   // An approved shop pasting several "product price" lines = a price update, wherever they are.
   if (u.shop && m.kind === "text" && (text.split(/\n/).filter((l) => parsePriceLine(l)).length >= 2 || text.split(/\n/).filter((l) => /=/.test(l)).length >= 2))
@@ -701,6 +702,11 @@ async function conversation(m: Incoming): Promise<void> {
     return void (await prompt(u, () => wa.sendText(u.phone, `*Step 3 of 4:* What are *${u.shopApplication ?? "your shop"}*'s opening hours?\n\nFor example: _Mon to Sat 7am to 8pm, Sun 8am to 1pm_`)));
   }
   if (id.startsWith("shoparea:") && u.step === "SHOP_AREA" && SHOP_AREAS[id.slice(9) as ShopArea]) return submitShop(u, id.slice(9) as ShopArea);
+  if (id === "mkt:any" || id === "mkt:town") return showMarket(u, id === "mkt:any");
+  {
+    const m = id.match(/^mkt:c:([a-z]+):([at]):(\d+)$/);
+    if (m) return showMarketPage(u, m[1]!, m[2] === "a", Number(m[3]));
+  }
   if (id.startsWith("cmp:p:")) return showProductPrices(u, id.slice(6));
   if (id.startsWith("cmp:shops:")) return listProductShops(u, id.slice(10));
   if (id.startsWith("cmp:shop:")) return showShop(u, id.slice(9));
@@ -720,6 +726,8 @@ async function conversation(m: Incoming): Promise<void> {
         if (!u.profile) return startProfile(u, "Before you search, a quick profile. Sellers see it before they swap numbers with you. It takes 1 minute.", "find");
         u.draft = { mode: "find" };
         return askFindText(u);
+      case "menu:market":
+        return showMarket(u, false);
       case "menu:sell":
         return startSell(u);
       case "menu:posts":
@@ -1198,6 +1206,80 @@ async function reviewPharmacy(admin: string, phone: string, approve: boolean): P
   p.pharmacyApplication = null;
 }
 
+// ---------------------------------------------------------------- Scoutly Marketplace (browse what's for sale)
+
+const MARKET_PAGE = 9; // 9 listings + 1 "See more" card = one carousel message per page
+
+/** Live items for sale (no services, no medicines), in the person's town or anywhere, newest first. */
+function marketListings(u: User, anywhere: boolean, category?: string): Listing[] {
+  const town = anywhere ? null : u.city;
+  return [...listings.values()]
+    .filter((l) => l.kind === "item" && l.active && !l.sold && l.category !== "pharmacy")
+    .filter((l) => !town || l.city === town || l.nationwide)
+    .filter((l) => !category || l.category === category)
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+async function showMarket(u: User, anywhere: boolean): Promise<void> {
+  u.step = "MENU";
+  const all = !u.city || anywhere;
+  const where = all ? "anywhere in Zimbabwe" : cityName(u.city);
+  const items = marketListings(u, all);
+  track("market_opened", u.phone, { anywhere: all, count: items.length });
+  if (!items.length) {
+    const buttons = [
+      ...(all ? [] : [{ id: "mkt:any", title: "🌍 Browse anywhere" }]),
+      { id: "menu:sell", title: "🏷️ Sell something" },
+      { id: "menu:main", title: "Main menu" },
+    ];
+    return void (await wa.sendButtons(u.phone, `🛍️ *Scoutly Marketplace*\n\nNothing is for sale ${all ? "on Scoutly" : `in ${where}`} yet. Be the first: list something and buyers come to you.`, buttons));
+  }
+  const counts = new Map<string, number>();
+  for (const l of items) counts.set(l.category, (counts.get(l.category) ?? 0) + 1);
+  const rows = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 9)
+    .map(([cat, n]) => ({ id: `mkt:c:${cat}:${all ? "a" : "t"}:0`, title: fit(catName(cat), 24), description: `${n} for sale` }));
+  rows.push(all && u.city ? { id: "mkt:town", title: `📍 Just ${fit(cityName(u.city), 15)}`, description: "Back to your own town" } : { id: "mkt:any", title: "🌍 Browse anywhere", description: "Every town in Zimbabwe" });
+  if (!u.city) rows.pop();
+  await wa.sendList(u.phone, `🛍️ Welcome to *Scoutly Marketplace*\n\nWhat would you like to browse ${all ? "anywhere in Zimbabwe" : `in *${where}*`}?`, "Categories", rows, "Scoutly Marketplace");
+}
+
+async function showMarketPage(u: User, category: string, anywhere: boolean, page: number): Promise<void> {
+  const all = anywhere || !u.city;
+  const items = marketListings(u, all, category);
+  const where = all ? "anywhere in Zimbabwe" : `in ${cityName(u.city)}`;
+  if (!items.length) return showMarket(u, all);
+  const { start, end, left, next } = marketPage(items.length, page, MARKET_PAGE);
+  const shown = items.slice(start, end);
+  track("market_page", u.phone, { category, page, anywhere: all });
+  const cards: CarouselCard[] = shown.map((l) => ({
+    imageUrl: cardImage(l),
+    text: cardText(l),
+    buttons: [{ id: `int:${l.id}:-`, title: "I'm interested" }],
+  }));
+  const more = Math.min(left, MARKET_PAGE);
+  if (next !== null)
+    cards.push({
+      imageUrl: demoPhoto(`ph-${getCategory(category) ? category : "other"}.jpg`),
+      text: `➡️ ${left} more in ${catName(category)}\nSwipe through the next page.`,
+      buttons: [{ id: `mkt:c:${category}:${all ? "a" : "t"}:${next}`, title: `See ${more} more` }],
+    });
+  const intro = `🛍️ *Scoutly Marketplace* · ${items.length} in ${catName(category)} ${where}${start ? ` (from #${start + 1})` : ""}, newest first.${cards.length > 1 ? " Swipe 👉" : ""}`;
+  await sendCards(
+    u.phone,
+    intro,
+    cards,
+    cards.map((c) => ({ id: c.buttons[0]!.id, title: fit(c.text.split("\n")[0] ?? "", 24), description: fit(c.text.split("\n")[1] ?? "", 72) })),
+  );
+  if (next === null)
+    await wa.sendButtons(u.phone, `That's everything in ${catName(category)} ${where}. Nothing you like?`, [
+      ...(all ? [] : [{ id: "mkt:any", title: "🌍 Browse anywhere" }]),
+      { id: all ? "mkt:any" : "mkt:town", title: "🛍️ Marketplace" },
+      { id: "menu:main", title: "Main menu" },
+    ]);
+}
+
 // ---------------------------------------------------------------- shops and price comparison
 
 /** One-off clean-up of early test data: brackets in product names, opening hours typed into a shop name. */
@@ -1528,6 +1610,7 @@ async function showMenu(u: User, greeting: string): Promise<void> {
       "Choose",
       [
         { id: "menu:find", title: "🔎 Find something", description: "Tell us what you need. We'll show you who has it." },
+        { id: "menu:market", title: "🛍️ Scoutly Marketplace", description: "See what people are selling near you." },
         { id: "menu:sell", title: "🏷️ Sell or offer", description: "List an item or service once. Buyers come to you." },
         { id: "menu:posts", title: "My posts", description: "See, close or mark as sold. Rate people." },
         { id: "menu:profile", title: "🪪 My profile", description: u.profile ? `${fit(u.profile.name, 40)} · tap to view or edit` : "Set it up: name, photo, about you." },

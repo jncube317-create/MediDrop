@@ -564,6 +564,22 @@ async function main(): Promise<void> {
     check(has(r, ADMIN, /Products: 4 \(1 without a photo\)/) && has(r, ADMIN, /Shops: 2/), "STATS counts products and shops");
     await send(ADMIN, { text: "MENU" });
 
+    // ---- Scoutly Marketplace: browse items for sale, own town first
+    r = await send(CUSTOMER, { text: "MENU" });
+    check(has(r, CUSTOMER, /menu:market "🛍️ Scoutly Marketplace"/), "main menu has Scoutly Marketplace");
+    r = await send(CUSTOMER, { reply: "menu:market" });
+    check(has(r, CUSTOMER, /Welcome to \*Scoutly Marketplace\*[\s\S]*browse in \*Bulawayo\*/) && has(r, CUSTOMER, /mkt:c:cars:t:0 "Cars[^"]*" – \d+ for sale/), "marketplace lists categories with counts in your town");
+    check(has(r, CUSTOMER, /mkt:any "🌍 Browse anywhere"/), "marketplace offers Browse anywhere");
+    check(!has(r, CUSTOMER, /mkt:c:(pharmacy|plumbing|mechanic|painting|beauty)/), "no services or medicines in the marketplace");
+    r = await send(CUSTOMER, { reply: option(r, CUSTOMER, /^mkt:c:cars:t:0/) });
+    check(has(r, CUSTOMER, /Scoutly Marketplace\* · \d+ in Cars[^\n]*in Bulawayo, newest first/) && has(r, CUSTOMER, /int:O-\d+:- /), "a category opens a carousel of listings with I'm interested");
+    check(has(r, CUSTOMER, /That's everything in Cars[\s\S]*Nothing you like/) || has(r, CUSTOMER, /mkt:c:cars:t:1/), "the page ends with See more or a no-dead-end note");
+    r = await send(CUSTOMER, { reply: "mkt:any" });
+    check(has(r, CUSTOMER, /browse anywhere in Zimbabwe/) && has(r, CUSTOMER, /mkt:c:\w+:a:0/) && has(r, CUSTOMER, /mkt:town "📍 Just Bulawayo"/), "Browse anywhere switches to every town, with a way back");
+    r = await send(CUSTOMER, { text: "market" });
+    check(has(r, CUSTOMER, /Welcome to \*Scoutly Marketplace\*/), "typing MARKET opens the marketplace");
+    await send(CUSTOMER, { text: "MENU" });
+
     // ---- How it works explains credits and number-sharing consent
     r = await send(CUSTOMER, { reply: "menu:help" });
     check(has(r, CUSTOMER, /How credits work[\s\S]*1 credit = 1 number swap[\s\S]*on hold[\s\S]*you get it back[\s\S]*\$1 = 2 credits · \$3 = 7 credits · \$5 = 13 credits/), "How it works explains credits, holds, refunds and bundles");

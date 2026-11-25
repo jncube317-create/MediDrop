@@ -80,3 +80,13 @@ test("missing size gets a suggestion, not 'unknown'", async () => {
   assert.deepEqual(r.unknownRows, [{ name: "Mazoe orange crush", cents: 350 }]);
   assert.equal(cleanProductName("< Olivine Cooking Oil 2 litre>"), "Olivine Cooking Oil 2 litre");
 });
+
+test("marketplace pages: 9 per page, See more until the end, bad page numbers are safe", async () => {
+  const { marketPage } = await import("../src/catalog");
+  assert.deepEqual(marketPage(3, 0, 9), { start: 0, end: 3, left: 0, next: null });
+  assert.deepEqual(marketPage(20, 0, 9), { start: 0, end: 9, left: 11, next: 1 });
+  assert.deepEqual(marketPage(20, 1, 9), { start: 9, end: 18, left: 2, next: 2 });
+  assert.deepEqual(marketPage(20, 2, 9), { start: 18, end: 20, left: 0, next: null });
+  assert.deepEqual(marketPage(20, 99, 9), { start: 18, end: 20, left: 0, next: null });
+  assert.deepEqual(marketPage(20, -5, 9), { start: 0, end: 9, left: 11, next: 1 });
+});

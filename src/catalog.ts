@@ -169,3 +169,13 @@ export function productCategory(name: string, explicit?: string): string {
   const g = guessCategory(name);
   return g === "carparts" || g === "cars" ? "carparts" : g && g !== "other" ? g : "groceries";
 }
+
+/** Marketplace paging: which slice of `total` listings page `page` shows, how many are left, and the next page number. */
+export function marketPage(total: number, page: number, size: number): { start: number; end: number; left: number; next: number | null } {
+  const last = Math.max(0, Math.floor((total - 1) / size));
+  const p = Math.min(Math.max(0, Math.floor(page) || 0), last);
+  const start = p * size;
+  const end = Math.min(total, start + size);
+  const left = total - end;
+  return { start, end, left, next: left > 0 ? p + 1 : null };
+}
