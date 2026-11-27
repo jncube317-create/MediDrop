@@ -124,12 +124,20 @@ async function main(): Promise<void> {
     await send(CUSTOMER, { reply: "consent:yes" });
     r = await send(CUSTOMER, { text: "Thandi" });
     check(has(r, CUSTOMER, /menu:shop/), "shows the menu");
+    check(r.some((m) => /^\[photo g04\.jpg\] ⭐ \*Featured this week\*/.test(m.body) && /\$3\.50\* ~\$4\.00~/.test(m.body) && /Sponsored/.test(m.body)), "sponsored featured card with special price");
+
+    r = await send(CUSTOMER, { reply: "menu:shop" });
+    check(has(r, CUSTOMER, /menu:specials "⭐ Specials"/), "Specials section in the shop list");
+    r = await send(CUSTOMER, { reply: "menu:specials" });
+    check(r.filter((m) => /⭐ \*Special\*/.test(m.body) && m.options.some((o) => o.includes("Add to cart"))).length === 2, "specials show as 2 picture cards");
 
     await send(CUSTOMER, { reply: "menu:shop" });
     r = await send(CUSTOMER, { reply: "cat:cupboard" });
     check(r.filter((m) => /^\[photo g0\d\.jpg\]/.test(m.body) && m.options.some((o) => o.includes("Add to cart"))).length === 3, "food & drinks show as 3 picture cards with Add to cart");
     r = await send(CUSTOMER, { reply: "add:g04" });
-    await send(CUSTOMER, { reply: "add:g04" });
+    check(has(r, CUSTOMER, /Goes well with your Mazoe/) && has(r, CUSTOMER, /add:g01/), "'goes well with' nudge after first item");
+    r = await send(CUSTOMER, { reply: "add:g04" });
+    check(!has(r, CUSTOMER, /Goes well with/), "pairing nudge shows only once per order");
     await send(CUSTOMER, { reply: "add:g05" });
     r = await send(CUSTOMER, { text: "omo" });
     check(has(r, CUSTOMER, /add:g07/), "typing a product name finds it");
@@ -146,10 +154,13 @@ async function main(): Promise<void> {
     check(has(r, CUSTOMER, /1 × Mazoe Orange Crush 2L/) && !has(r, CUSTOMER, /Potatoes/), "edit cart removes items");
 
     r = await send(CUSTOMER, { reply: "menu:checkout" });
+    check(has(r, CUSTOMER, /Before you pay/) && has(r, CUSTOMER, /nudge:add:g03/), "checkout nudge offers noodles (chocolate already in cart)");
+    r = await send(CUSTOMER, { reply: "nudge:add:g03" });
+    check(has(r, CUSTOMER, /Added Kellogg's Noodles Curry/), "nudge item added in one tap");
     const firstSlot = r.flatMap((m) => m.options).find((o) => o.startsWith("slot:"))?.split(" ")[0];
     check(Boolean(firstSlot), "offers pickup times");
     r = await send(CUSTOMER, { reply: firstSlot ?? "" });
-    check(has(r, CUSTOMER, /To pay \$11\.50/), "summary total is right ($4.00 + $3.50 + $4.00)");
+    check(has(r, CUSTOMER, /To pay \$11\.10/), "summary total uses special prices ($3.50 + $3.50 + $3.60 + $0.50)");
     await send(CUSTOMER, { reply: "pay:now" });
     await send(CUSTOMER, { reply: "payer:self" }, 4200);
     r = outbox.slice(0, printed);
@@ -168,7 +179,7 @@ async function main(): Promise<void> {
 
     await send(STAFF, { reply: "missing:GR-2041" });
     r = await send(STAFF, { reply: "missing:GR-2041:g07" });
-    check(has(r, CUSTOMER, /\$4\.00\* has been added to your Greens wallet/), "missing OMO credits $4.00 to the wallet");
+    check(has(r, CUSTOMER, /\$3\.60\* has been added to your Greens wallet/), "missing OMO credits its special price, $3.60, to the wallet");
     r = await send(STAFF, { text: pickupCode });
     check(has(r, STAFF, /isn't marked packed/), "code refused until packed");
     r = await send(STAFF, { reply: "pack:GR-2041" });
@@ -187,20 +198,21 @@ async function main(): Promise<void> {
     check((await fetch(`http://localhost:${BOT_PORT}${qrLink}`)).status === 404, "QR link stops working after collection");
 
     r = await send(CUSTOMER, { reply: "menu:wallet" });
-    check(has(r, CUSTOMER, /\$4\.00/), "wallet shows $4.00");
+    check(has(r, CUSTOMER, /\$3\.60/), "wallet shows $3.60");
     r = await send(CUSTOMER, { reply: "menu:reorder" });
     check(has(r, CUSTOMER, /OMO Auto Liquid 750ml/), "reorder rebuilds the last basket");
     r = await send(CUSTOMER, { reply: "menu:checkout" });
+    check(!has(r, CUSTOMER, /Before you pay/), "no checkout nudge when both till-side items are already in the cart");
     const slot2 = r.flatMap((m) => m.options).find((o) => o.startsWith("slot:"))?.split(" ")[0] ?? "";
     r = await send(CUSTOMER, { reply: slot2 });
-    check(has(r, CUSTOMER, /Greens wallet −\$4\.00/), "wallet comes off the next order");
+    check(has(r, CUSTOMER, /Greens wallet −\$3\.60/), "wallet comes off the next order");
     await send(CUSTOMER, { reply: "pay:now" });
     await send(CUSTOMER, { reply: "payer:other" });
     r = await send(CUSTOMER, { text: "0712 345 678" });
     check(has(r, CUSTOMER, /isn't an EcoCash number/), "wrong network number is caught");
     await send(CUSTOMER, { text: "0789 645 899" }, 4200);
     r = outbox.slice(0, printed);
-    check(has(r, CUSTOMER, /Paid: EcoCash \$7\.50 \+ wallet \$4\.00/), "receipt shows EcoCash + wallet split");
+    check(has(r, CUSTOMER, /Paid: EcoCash \$7\.50 \+ wallet \$3\.60/), "receipt shows EcoCash + wallet split");
 
     r = await send(STAFF, { text: "orders" });
     check(has(r, STAFF, /GR-2042/), "staff can list open orders");

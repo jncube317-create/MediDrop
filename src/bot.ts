@@ -19,6 +19,7 @@ import {
 } from "./orders";
 import { checkPayment, startPayment, type PayMethod } from "./pay";
 import { formatLocalNumber, networkMatches, normalizeZwMobile } from "./paystatus";
+import { checkoutNudgeFor, featuredSpecial, pairingFor, specialFor, specialProducts, withSpecialPrice } from "./promos";
 
 export type Incoming =
   | { from: string; kind: "text"; text: string }
@@ -34,6 +35,7 @@ type Step =
   | "ASK_SEARCH"
   | "CART"
   | "EDIT_CART"
+  | "CHECKOUT_NUDGE"
   | "PICK_SLOT"
   | "SUMMARY"
   | "PICK_METHOD"
@@ -48,6 +50,7 @@ interface Session {
   cart: CartLine[];
   orderId: string | null; // the order being checked out
   payMethod: PayMethod | null;
+  nudges: { pairing: boolean; checkout: boolean }; // each shown at most once per order
   updatedAt: number;
   reprompt: (() => Promise<unknown>) | null;
 }
@@ -60,7 +63,7 @@ let orderSeq = 2040;
 const CHECKOUT_TIMEOUT_MS = 30 * 60 * 1000;
 const PAYMENT_TIMEOUT_MS = 10 * 60 * 1000;
 const PAYING_STEPS: Step[] = ["WAIT_PAYMENT"];
-const CHECKOUT_STEPS: Step[] = ["PICK_SLOT", "SUMMARY", "PICK_METHOD", "CONFIRM_PAYER", "ASK_PAYER", "PAY_FAILED"];
+const CHECKOUT_STEPS: Step[] = ["CHECKOUT_NUDGE", "PICK_SLOT", "SUMMARY", "PICK_METHOD", "CONFIRM_PAYER", "ASK_PAYER", "PAY_FAILED"];
 
 /** For the receipt QR route in server.ts. */
 export function findOrderByQrToken(token: string): Order | undefined {
@@ -71,7 +74,7 @@ export function findOrderByQrToken(token: string): Order | undefined {
 function session(phone: string): Session {
   let s = sessions.get(phone);
   if (!s) {
-    s = { step: "ASK_CONSENT", name: null, cart: [], orderId: null, payMethod: null, updatedAt: Date.now(), reprompt: null };
+    s = { step: "ASK_CONSENT", name: null, cart: [], orderId: null, payMethod: null, nudges: { pairing: false, checkout: false }, updatedAt: Date.now(), reprompt: null };
     sessions.set(phone, s);
   }
   s.updatedAt = Date.now();
@@ -139,7 +142,7 @@ async function customer(m: Incoming): Promise<void> {
   if (s.step === "ASK_NAME") {
     if (!text) return void (await wa.sendText(to, "Please type your first name."));
     s.name = text.slice(0, 30);
-    return showMenu(to, s, `Welcome to ${env.STORE_NAME}, ${s.name} 👋`);
+    return showMenu(to, s, `Welcome to ${env.STORE_NAME}, ${s.name} 👋`, true);
   }
 
   // Global commands.
@@ -149,7 +152,7 @@ async function customer(m: Incoming): Promise<void> {
       return;
     }
     cancelCheckout(to, s);
-    return showMenu(to, s, `Hi ${s.name ?? "there"} 👋`);
+    return showMenu(to, s, `Hi ${s.name ?? "there"} 👋`, true);
   }
   if (/^help$/i.test(text)) {
     await wa.sendText(
@@ -190,6 +193,8 @@ async function customer(m: Incoming): Promise<void> {
         return showMenu(to, s, "Main menu");
       case "menu:shop":
         return showCategories(to, s);
+      case "menu:specials":
+        return showSpecials(to, s);
       case "menu:search":
         s.step = "ASK_SEARCH";
         await prompt(s, () => wa.sendText(to, "Type what you're looking for (e.g. bread, Mazoe, OMO)."));
@@ -237,6 +242,18 @@ async function customer(m: Incoming): Promise<void> {
 
     case "EDIT_CART":
       return didntGetThat(to, s);
+
+    case "CHECKOUT_NUDGE": {
+      if (id === "nudge:skip") return askSlot(to, s);
+      if (id.startsWith("nudge:add:")) {
+        const p = getProduct(id.slice(10));
+        if (p && addToCart(s.cart, withSpecialPrice(p)).ok) {
+          await wa.sendText(to, `✅ Added ${p.name}. 🛒 ${itemCount(s.cart)} items · ${formatUsd(cartTotal(s.cart))}`);
+        }
+        return askSlot(to, s);
+      }
+      return didntGetThat(to, s);
+    }
 
     case "PICK_SLOT": {
       const slot = id.startsWith("slot:") ? slotsNow().find((x) => x.id === id.slice(5)) : undefined;
@@ -338,8 +355,9 @@ function lastOrder(to: string): Order | undefined {
   return mine[mine.length - 1];
 }
 
-async function showMenu(to: string, s: Session, greeting: string): Promise<void> {
+async function showMenu(to: string, s: Session, greeting: string, withFeatured = false): Promise<void> {
   s.step = "MENU";
+  if (withFeatured) await sendFeaturedCard(to);
   const count = itemCount(s.cart);
   const rows = [
     { id: "menu:shop", title: "Shop by category", description: "Bakery, food & drinks, household" },
@@ -365,15 +383,52 @@ async function showCategories(to: string, s: Session): Promise<void> {
       to,
       "Pick a section:",
       "Sections",
-      CATEGORIES.map((c) => ({ id: `cat:${c.key}`, title: c.name, description: c.blurb })),
+      [
+        { id: "menu:specials", title: "⭐ Specials", description: "This week's deals" },
+        ...CATEGORIES.map((c) => ({ id: `cat:${c.key}`, title: c.name, description: c.blurb })),
+      ],
       "Shop",
     ),
   );
 }
 
+function priceText(p: Product): string {
+  if (!p.inStock) return "*Out of stock*";
+  const special = specialFor(p.id);
+  return special ? `*${formatUsd(special.priceCents)}* ~${formatUsd(special.wasCents)}~` : `*${formatUsd(p.priceCents)}*`;
+}
+
 function cardText(p: Product): string {
-  const price = p.inStock ? `*${formatUsd(p.priceCents)}*` : "*Out of stock*";
-  return `*${p.name}*\n${p.size} · ${price}\n\n${p.blurb}`;
+  const tag = specialFor(p.id) && p.inStock ? "⭐ *Special* · " : "";
+  return `${tag}*${p.name}*\n${p.size} · ${priceText(p)}\n\n${p.blurb}`;
+}
+
+/** The sponsored card shown when a customer opens the menu. */
+async function sendFeaturedCard(to: string): Promise<void> {
+  const special = featuredSpecial();
+  const p = special ? getProduct(special.productId) : undefined;
+  if (!special || !p) return;
+  const imageUrl = productImageUrl(env.PUBLIC_URL, p.id) ?? undefined;
+  await wa.sendButtons(
+    to,
+    `⭐ *Featured this week*\n*${p.name}*\n${p.size} · ${priceText(p)}\n\n${p.blurb}`,
+    [
+      { id: `add:${p.id}`, title: "🛒 Add to cart" },
+      { id: "menu:specials", title: "See all specials" },
+    ],
+    { imageUrl, footer: "Sponsored · demo special" },
+  );
+}
+
+async function showSpecials(to: string, s: Session): Promise<void> {
+  s.step = "BROWSE";
+  const list = specialProducts();
+  if (list.length === 0) {
+    await wa.sendText(to, "No specials right now. Check back soon!");
+    return showCategories(to, s);
+  }
+  await wa.sendText(to, "⭐ *This week's specials*");
+  await sendProductCards(to, list, "Tap 🛒 *Add to cart* on anything you want.");
 }
 
 const CARD_FOOTER = () => `${env.STORE_NAME} · pay with EcoCash, collect in store`.slice(0, 60);
@@ -435,7 +490,7 @@ async function search(to: string, s: Session, query: string): Promise<void> {
 async function addProduct(to: string, s: Session, productId: string): Promise<void> {
   const product = getProduct(productId);
   if (!product) return didntGetThat(to, s);
-  const result = addToCart(s.cart, product);
+  const result = addToCart(s.cart, withSpecialPrice(product));
   if (!result.ok) {
     const why =
       result.reason === "out_of_stock"
@@ -458,6 +513,17 @@ async function addProduct(to: string, s: Session, productId: string): Promise<vo
       { id: "menu:cart", title: "View cart" },
     ],
   );
+  // Impulse nudge 1: "goes well with", once per order.
+  const partner = s.nudges.pairing ? undefined : pairingFor(product.id, s.cart);
+  if (partner) {
+    s.nudges.pairing = true;
+    await wa.sendButtons(
+      to,
+      `💡 *Goes well with your ${product.name}*\n*${partner.name}* · ${priceText(partner)}`,
+      [{ id: `add:${partner.id}`, title: "➕ Add it" }],
+      { imageUrl: productImageUrl(env.PUBLIC_URL, partner.id) ?? undefined },
+    );
+  }
 }
 
 async function showCart(to: string, s: Session, note = ""): Promise<void> {
@@ -516,7 +582,7 @@ async function reorder(to: string, s: Session): Promise<void> {
     const product = getProduct(line.productId);
     if (!product) continue;
     const room = Math.min(line.qty, product.maxQty - (s.cart.find((c) => c.productId === product.id)?.qty ?? 0));
-    if (room < 1 || !addToCart(s.cart, product, room).ok) skipped.push(product.name);
+    if (room < 1 || !addToCart(s.cart, withSpecialPrice(product), room).ok) skipped.push(product.name);
   }
   const note = skipped.length ? `🔁 Added your last basket. Not available right now: ${skipped.join(", ")}.` : "🔁 Added your last basket at today's prices.";
   return showCart(to, s, note);
@@ -544,6 +610,24 @@ async function startCheckout(to: string, s: Session): Promise<void> {
   if (unavailable.length) {
     for (const l of unavailable) s.cart.splice(s.cart.indexOf(l), 1);
     return showCart(to, s, `Sorry, these just went out of stock and were removed: ${unavailable.map((l) => l.name).join(", ")}.`);
+  }
+  // Impulse nudge 2: the "till-side" item, once per order, before choosing a time.
+  const extra = s.nudges.checkout ? undefined : checkoutNudgeFor(s.cart);
+  if (extra) {
+    s.nudges.checkout = true;
+    s.step = "CHECKOUT_NUDGE";
+    await prompt(s, () =>
+      wa.sendButtons(
+        to,
+        `Before you pay 🛒\n*${extra.name}* · ${priceText(extra)}\nAdd it to your order?`,
+        [
+          { id: `nudge:add:${extra.id}`, title: "Yes, add it" },
+          { id: "nudge:skip", title: "No thanks" },
+        ],
+        { imageUrl: productImageUrl(env.PUBLIC_URL, extra.id) ?? undefined },
+      ),
+    );
+    return;
   }
   return askSlot(to, s);
 }
@@ -734,6 +818,7 @@ async function onPaid(order: Order, by: "paynow" | "wallet"): Promise<void> {
     s.step = "MENU";
     s.orderId = null;
     s.cart = [];
+    s.nudges = { pairing: false, checkout: false };
   }
   const paidWith = [
     order.payCents ? `EcoCash ${formatUsd(order.payCents)}` : "",
