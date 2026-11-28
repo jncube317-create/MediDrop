@@ -429,7 +429,7 @@ async function main(): Promise<void> {
     // ---- buying credits (simulated EcoCash)
     r = await send(BUYER2, { reply: "menu:credits" });
     check(has(r, BUYER2, /2 credits · \$1\.00/) && has(r, BUYER2, /7 credits · \$3\.00/) && has(r, BUYER2, /13 credits · \$5\.00/), "bundles are $1, $3 and $5");
-    check(has(r, BUYER2, /3 credits every week \(Monday\)\. Unused free credits don.t carry over/), "credits screen explains the weekly free credits");
+    check(has(r, BUYER2, /Everyone gets 3 free credits when they join[\s\S]*no credits expire/) && !has(r, BUYER2, /every week|Monday/), "credits screen: 3 free at sign-up only, no weekly top-up");
     await send(BUYER2, { reply: "buy:b2" });
     r = await send(BUYER2, { reply: "pay:self" });
     check(has(r, BUYER2, /enter your PIN/), "EcoCash prompt sent");

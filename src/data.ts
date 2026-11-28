@@ -79,7 +79,7 @@ export const BUNDLES: Bundle[] = [
 ];
 
 export const WELCOME_CREDITS = 3;
-/** Every week (Monday, Harare time) everyone gets this many free credits, once per week. */
+/** No longer used: weekly free credits stopped on 28 Nov 2026 (only the welcome credits remain). */
 export const WEEKLY_FREE_CREDITS = 3;
 
 /**

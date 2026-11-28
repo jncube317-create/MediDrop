@@ -29,7 +29,6 @@ import {
   SAMPLE_LISTINGS,
   SAMPLE_SELLERS,
   WELCOME_CREDITS,
-  WEEKLY_FREE_CREDITS,
   weekKey,
   wantedBy,
   WHEN_LABEL,
@@ -594,23 +593,7 @@ async function conversation(m: Incoming): Promise<void> {
     await wa.sendText(to, "Your unfinished post timed out, so we've cleared it.");
   }
 
-  // ---- weekly free credits: 3 for everyone, once a week (first message of the week, from Monday)
-  // Free credits never carry over: unused ones from last week disappear, bought ones stay.
-  if (u.city) {
-    const week = weekKey();
-    ledger.capFree(u.phone, WEEKLY_FREE_CREDITS, week);
-    if (u.lastWeekly !== week) {
-      u.lastWeekly = week;
-      const added = ledger.weeklyReset(u.phone, WEEKLY_FREE_CREDITS, week);
-      if (added > 0) {
-        track("weekly_credits", to, { added });
-        await wa.sendText(
-          to,
-          `🎁 Your ${WEEKLY_FREE_CREDITS} free credits for this week are here. You have *${credits(ledger.balance(to))}*.\nFree credits don't carry over, so use them by Sunday. Credits you buy never expire.`,
-        );
-      }
-    }
-  }
+  // Free credits: only the welcome credits at sign-up (no weekly top-up since 28 Nov 2026).
 
   // ---- first contact: consent → name → city
   if (u.step === "ASK_CONSENT") {
@@ -1100,7 +1083,7 @@ function HOW_IT_WORKS(): string {
     `🔎 *Looking for something?* Type it in one message, e.g. _"pre-loved fridge under $100"_ or _"plumber this week"_. We show you who has it, cheapest first. For services, providers send you quotes to compare.`,
     `🏷️ *Selling or offering a service?* List it once with photos. People looking for it are sent to you. No more posting in groups and hoping.`,
     `🤝 *How a swap works*\n1. You tap *I'm interested* on something (or someone is interested in yours).\n2. The other person sees your name, town and what you're after. *Never your number.*\n3. Only if they say *yes* do you both get each other's number and a chat link.`,
-    `💳 *How credits work*\n• *1 credit = 1 number swap.* Both people use 1 credit each.\n• Searching, posting, listing and looking are *free*.\n• When you tap *I'm interested*, 1 credit goes *on hold*. It isn't spent yet.\n• It's only used if the swap happens. If they say no, don't reply in 48 hours, or it's already sold, *you get it back*.\n• *Free credits:* ${WEEKLY_FREE_CREDITS} every week (your first week starts when you join). Unused free credits *don't carry over* to the next week.\n• *Bought credits never expire*, and we always use your free ones first.\n• Need more? ${bundles}, paid with EcoCash or OneMoney.\n• Type *CREDITS* to see your balance.`,
+    `💳 *How credits work*\n• *1 credit = 1 number swap.* Both people use 1 credit each.\n• Searching, posting, listing and looking are *free*.\n• When you tap *I'm interested*, 1 credit goes *on hold*. It isn't spent yet.\n• It's only used if the swap happens. If they say no, don't reply in 48 hours, or it's already sold, *you get it back*.\n• *Free credits:* you get ${WELCOME_CREDITS} when you join, and they don't expire.\n• *Bought credits never expire* either, and we use your free ones first.\n• Need more? ${bundles}, paid with EcoCash or OneMoney.\n• Type *CREDITS* to see your balance.`,
     `🔒 *Your number:* by using ${env.APP_NAME} you agree that we share your phone number with another person *only when you both agree* to swap. Never before.`,
     `Type MENU, TERMS or STOP (alerts off) any time.`,
     LIABILITY,
@@ -2010,7 +1993,7 @@ function resultsNote(u: User, count: number, cost: number): string {
   const have = ledger.balance(u.phone);
   const many = count === 1 ? "1 match so far. Tap *🔔 Alert me* and we'll send you new ones as they're listed." : `${count} matches, best first.`;
   if (have < cost)
-    return `${many}\n\n⚠️ *You have ${credits(have)}*, so you can't swap numbers yet. 🎁 ${WEEKLY_FREE_CREDITS} free credits arrive on Monday, or get ${credits(BUNDLES[0]?.credits ?? 2)} now for ${formatUsd(BUNDLES[0]?.cents ?? 100).replace(".00", "")}.`;
+    return `${many}\n\n⚠️ *You have ${credits(have)}*, so you can't swap numbers yet. Get ${credits(BUNDLES[0]?.credits ?? 2)} for ${formatUsd(BUNDLES[0]?.cents ?? 100).replace(".00", "")}.`;
   return `${many} Tap *I'm interested* on a card and we'll ask the seller. Swapping numbers uses ${credits(cost)} (you have ${have}).`;
 }
 
@@ -2455,10 +2438,10 @@ async function buyerInterested(u: User, listingId: string, needId: string | null
     track("out_of_credits", u.phone, { role: "buyer", category: l.category });
     await wa.sendButtons(
       u.phone,
-      `Swapping numbers for this uses ${credits(cost)}. You have ${credits(ledger.balance(u.phone))}.\n\n🎁 ${WEEKLY_FREE_CREDITS} free credits arrive on Monday, or buy now from ${formatUsd(BUNDLES[0]?.cents ?? 100).replace(".00", "")} and *we'll ask the seller straight after you pay*.`,
+      `Swapping numbers for this uses ${credits(cost)}. You have ${credits(ledger.balance(u.phone))}.\n\nBuy credits from ${formatUsd(BUNDLES[0]?.cents ?? 100).replace(".00", "")} and *we'll ask the seller straight after you pay*.`,
       [
         { id: "menu:credits", title: "💳 Buy credits" },
-        { id: "menu:main", title: "Wait for Monday" },
+        { id: "menu:main", title: "Main menu" },
       ],
     );
     return;
@@ -3094,7 +3077,7 @@ async function showCredits(u: User): Promise<void> {
   await prompt(u, () =>
     wa.sendList(
       u.phone,
-      `💳 You have *${credits(ledger.balance(u.phone))}*${ledger.boughtLeft(u.phone) > 0 ? ` (${ledger.freeLeft(u.phone)} free this week + ${ledger.boughtLeft(u.phone)} bought)` : ""}.\n\nA number swap uses 1 credit from each side. Held credits come back if a swap doesn't happen. Ads use ${credits(AD_TAP_COST)} per tap.\n\n🎁 Free: ${WEEKLY_FREE_CREDITS} credits every week (Monday). Unused free credits don't carry over; we use them before the ones you buy. Bought credits never expire.\n\nNeed more? Buy a bundle:`,
+      `💳 You have *${credits(ledger.balance(u.phone))}*${ledger.boughtLeft(u.phone) > 0 ? ` (${ledger.freeLeft(u.phone)} free + ${ledger.boughtLeft(u.phone)} bought)` : ""}.\n\nA number swap uses 1 credit from each side. Held credits come back if a swap doesn't happen. Ads use ${credits(AD_TAP_COST)} per tap.\n\n🎁 Everyone gets ${WELCOME_CREDITS} free credits when they join. We use free credits before bought ones, and no credits expire.\n\nNeed more? Buy a bundle:`,
       "Buy credits",
       [
         ...BUNDLES.map((b) => ({ id: `buy:${b.key}`, title: `${credits(b.credits)} · ${formatUsd(b.cents)}`, description: `${formatUsd(Math.round(b.cents / b.credits))} per credit` })),
