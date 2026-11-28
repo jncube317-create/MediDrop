@@ -70,7 +70,7 @@ This is the single source of truth. Update it when something changes.
 | | |
 |---|---|
 | Welcome | 3 free credits |
-| Weekly | **3 free credits every week** (from Monday, Harare time). Unused free credits **don't carry over**; free ones are used first; **bought credits never expire**. Admin GRANTs count as bought |
+| Free credits | **3 at sign-up only** (weekly top-up stopped 28 Nov 2026). No credits expire; free ones are used first. Admin GRANTs count as bought |
 | $1 | 2 credits |
 | $3 | 7 credits |
 | $5 | 13 credits |
